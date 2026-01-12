@@ -7,43 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://hlss:hlss@db:5432/hlss
-      - APP_ENV=development
-      - DEBUG=true
     env_file:
       - .env
-    depends_on:
-      db:
-        condition: service_healthy
     volumes:
       - ./src:/app/src:ro  # Mount source for development
-    networks:
-      - hlss-network
-
-  db:
-    image: postgres:16-alpine
-    container_name: hlss-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: hlss
-      POSTGRES_PASSWORD: hlss
-      POSTGRES_DB: hlss
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hlss -d hlss"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - hlss-network
-
-volumes:
-  postgres-data:
-
-networks:
-  hlss-network:
-    driver: bridge

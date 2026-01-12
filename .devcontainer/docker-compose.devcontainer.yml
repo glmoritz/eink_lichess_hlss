@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile.dev
+    volumes:
+      - ..:/app:cached
+      - hlss-venv:/app/.venv
+    command: sleep infinity
+    user: hlss
+    env_file:
+      - ../.env
+    environment:
+      - APP_ENV=development
+      - DEBUG=true
+      - PYTHONPATH=/app/src
+
+volumes:
+  hlss-venv:

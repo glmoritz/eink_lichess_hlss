@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -22,9 +22,9 @@ RUN useradd --create-home --shell /bin/bash hlss
 WORKDIR /app
 
 # Install Python dependencies
-COPY pyproject.toml ./
+COPY requirements.txt ./
 RUN pip install --upgrade pip && \
-    pip install .
+    pip install -r requirements.txt
 
 # Copy application code
 COPY --chown=hlss:hlss src/ ./src/
