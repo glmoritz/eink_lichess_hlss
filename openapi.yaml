@@ -1,0 +1,336 @@
+openapi: 3.1.0
+
+info:
+  title: Low Level Screen Service (LLSS) API
+  version: 0.1.0
+  description: >
+    The Low Level Screen Service (LLSS) brokers communication between
+    e-Ink display devices and High Level Screen Service (HLSS) instances.
+    It manages authentication, frame storage, diffing, and device orchestration.
+
+servers:
+  - url: https://eink.tutu.eng.br/api
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Devices
+    description: Physical e-Ink devices (ESP32-based)
+  - name: Instances
+    description: HLSS instances managed by LLSS
+  - name: Frames
+    description: Logical and rendered frames
+  - name: Inputs
+    description: Button and input events
+
+paths:
+
+  /devices/register:
+    post:
+      tags: [Devices]
+      summary: Register a new physical device
+      description: >
+        Registers a new device and returns credentials used for future authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceRegistration"
+      responses:
+        "201":
+          description: Device successfully registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceRegistrationResponse"
+
+  /devices/{device_id}/state:
+    get:
+      tags: [Devices]
+      summary: Device heartbeat and action polling
+      description: >
+        Core polling endpoint used by devices to report status.
+        LLSS responds with the next action to perform.
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: last_frame_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: last_event_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Device action response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceStateResponse"
+
+  /devices/{device_id}/frames/{frame_id}:
+    get:
+      tags: [Devices, Frames]
+      summary: Fetch rendered frame data
+      description: >
+        Returns raw framebuffer data ready to be written to the e-Ink display.
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: frame_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Raw framebuffer payload
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /devices/{device_id}/inputs:
+    post:
+      tags: [Devices, Inputs]
+      summary: Submit input events from a device
+      description: >
+        Sends button presses or other input events from the device to LLSS.
+        LLSS routes them to the active HLSS instance.
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InputEvent"
+      responses:
+        "202":
+          description: Input event accepted
+
+  /instances:
+    post:
+      tags: [Instances]
+      summary: Create a new HLSS instance
+      description: >
+        Creates a new logical HLSS instance (e.g. a chess game or HA dashboard).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceCreate"
+      responses:
+        "201":
+          description: Instance created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Instance"
+
+  /instances/{instance_id}/frames:
+    post:
+      tags: [Instances, Frames]
+      summary: Submit a new logical frame
+      description: >
+        HLSS submits a newly rendered frame (PNG).
+        LLSS stores, diffs, and schedules device refreshes.
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          image/png:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Frame accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FrameCreateResponse"
+
+  /instances/{instance_id}/notify:
+    post:
+      tags: [Instances]
+      summary: Notify LLSS of instance state change
+      description: >
+        Notifies LLSS that the instance state has changed and a new frame
+        may be available or should be requested.
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          description: Notification accepted
+
+  /instances/{instance_id}/inputs:
+    post:
+      tags: [Instances, Inputs]
+      summary: Receive forwarded input events
+      description: >
+        LLSS forwards device input events to the active HLSS instance.
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InputEvent"
+      responses:
+        "200":
+          description: Input processed
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+
+    DeviceRegistration:
+      type: object
+      required: [hardware_id, firmware_version, display]
+      properties:
+        hardware_id:
+          type: string
+        firmware_version:
+          type: string
+        display:
+          $ref: "#/components/schemas/DisplayCapabilities"
+
+    DeviceRegistrationResponse:
+      type: object
+      properties:
+        device_id:
+          type: string
+        device_secret:
+          type: string
+        access_token:
+          type: string
+
+    DisplayCapabilities:
+      type: object
+      required: [width, height, bit_depth]
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        bit_depth:
+          type: integer
+        partial_refresh:
+          type: boolean
+          default: false
+
+    DeviceStateResponse:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [NOOP, FETCH_FRAME, SLEEP]
+        frame_id:
+          type: string
+          nullable: true
+        active_instance_id:
+          type: string
+        poll_after_ms:
+          type: integer
+          description: Hint for next poll interval
+
+    InputEvent:
+      type: object
+      required: [button, event_type, timestamp]
+      properties:
+        button:
+          type: string
+          enum:
+            - BTN_1
+            - BTN_2
+            - BTN_3
+            - BTN_4
+            - BTN_5
+            - BTN_6
+            - BTN_7
+            - BTN_8
+            - ENTER
+            - ESC
+            - HL_LEFT
+            - HL_RIGHT
+        event_type:
+          type: string
+          enum: [PRESS, LONG_PRESS, RELEASE]
+        timestamp:
+          type: string
+          format: date-time
+
+    InstanceCreate:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          description: >
+            Instance type (e.g. chess, homeassistant)
+
+    Instance:
+      type: object
+      properties:
+        instance_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    FrameCreateResponse:
+      type: object
+      properties:
+        frame_id:
+          type: string
+        hash:
+          type: string
+        created_at:
+          type: string
+          format: date-time
