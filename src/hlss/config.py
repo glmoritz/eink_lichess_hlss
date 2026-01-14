@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # Server
     host: str = "0.0.0.0"
     port: int = 8000
+    public_url: str = "http://localhost:8000"  # Public URL for configuration links
 
     # Database
     database_url: PostgresDsn = "postgresql://lichess_hlss_root:password@localhost:5432/eink_lichess_hlss"  # type: ignore

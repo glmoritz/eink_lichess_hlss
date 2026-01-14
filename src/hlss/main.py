@@ -14,6 +14,7 @@ from hlss.config import get_settings
 from hlss.database import init_db
 from hlss.routers import (
     accounts_router,
+    configure_router,
     frames_router,
     games_router,
     inputs_router,
@@ -68,6 +69,7 @@ app.include_router(games_router, prefix="/api")
 app.include_router(frames_router, prefix="/api")
 app.include_router(inputs_router, prefix="/api")
 app.include_router(instances_router, prefix="/api")
+app.include_router(configure_router)  # Web UI at /configure
 
 
 @app.get("/health", response_model=HealthResponse, tags=["health"])

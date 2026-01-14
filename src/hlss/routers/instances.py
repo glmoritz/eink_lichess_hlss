@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 
 from hlss.config import get_settings
 from hlss.database import get_db
-from hlss.models import ButtonType, Frame, InputEvent as InputEventModel
-from hlss.models import InputEventType, Instance, LichessAccount, ScreenType
+from hlss.models import ButtonType, Frame, InputEventType, Instance, LichessAccount, ScreenType
+from hlss.models import InputEvent as InputEventModel
 from hlss.schemas import (
     InputEventCreate,
     InstanceCreate,
@@ -47,16 +47,16 @@ def initialize_instance(
 ) -> InstanceInitResponse:
     """
     Initialize a new HLSS instance.
-    
+
     Called by LLSS when a new instance is created.
     Establishes trust, stores callbacks, and initializes state.
-    
+
     This is the main entry point for LLSS to set up communication with HLSS.
     """
     # Check if instance already exists with this LLSS ID
     stmt = select(Instance).where(Instance.llss_instance_id == data.instance_id)
     existing = db.scalars(stmt).first()
-    
+
     if existing:
         # Update existing instance with new callbacks
         existing.callback_frames = data.callbacks.frames
@@ -90,10 +90,10 @@ def initialize_instance(
         db.add(instance)
         db.commit()
         db.refresh(instance)
-    
+
     # Check if we have any configured Lichess accounts
     accounts = db.scalars(select(LichessAccount).where(LichessAccount.is_enabled == True)).all()
-    
+
     if accounts:
         # If we have accounts, mark as ready
         instance.is_ready = True
@@ -104,12 +104,12 @@ def initialize_instance(
         instance.linked_account_id = default_account.id
         db.commit()
         db.refresh(instance)
-    
+
     # Generate configuration URL
-    config_url = f"{settings.host}:{settings.port}/configure/{instance.id}"
+    config_url = f"{settings.public_url}/configure/{instance.id}"
     instance.configuration_url = config_url
     db.commit()
-    
+
     return InstanceInitResponse(
         status="initialized",
         needs_configuration=instance.needs_configuration,
@@ -130,22 +130,22 @@ def receive_instance_input(
 ) -> dict:
     """
     Receive input event from LLSS.
-    
+
     Receives abstract button events forwarded by LLSS.
     HLSS updates internal state and may render a new frame.
-    
+
     The instance_id is the LLSS-assigned instance ID.
     """
     # Find instance by LLSS instance ID
     stmt = select(Instance).where(Instance.llss_instance_id == instance_id)
     instance = db.scalars(stmt).first()
-    
+
     if not instance:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instance not found: {instance_id}",
         )
-    
+
     # Store the input event
     event = InputEventModel(
         button=ButtonType(data.button.value),
@@ -156,26 +156,26 @@ def receive_instance_input(
     db.add(event)
     db.commit()
     db.refresh(event)
-    
+
     # Process the input event synchronously
     processor = InputProcessorService(db)
     state_changed, error = processor.process_button(
         instance=instance,
         button=ButtonType(data.button.value),
     )
-    
+
     # Mark event as processed
     event.processed = True
     event.processed_at = datetime.utcnow()
     db.commit()
-    
+
     if state_changed:
         # Queue a render and frame submission to LLSS
         background_tasks.add_task(
             _render_and_submit_frame,
             instance_id=instance.id,
         )
-    
+
     return {
         "status": "processed",
         "state_changed": state_changed,
@@ -191,27 +191,27 @@ def receive_instance_input(
 def get_instance_status(instance_id: str, db: DbSession) -> InstanceStatusResponse:
     """
     Get instance status.
-    
+
     Returns the current status of the instance, including whether
     user configuration is required.
-    
+
     The instance_id is the LLSS-assigned instance ID.
     """
     # Find instance by LLSS instance ID
     stmt = select(Instance).where(Instance.llss_instance_id == instance_id)
     instance = db.scalars(stmt).first()
-    
+
     if not instance:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instance not found: {instance_id}",
         )
-    
+
     # Determine active screen name
     active_screen = instance.current_screen.value
     if instance.current_game_id:
         active_screen = f"game_{instance.current_game_id}"
-    
+
     return InstanceStatusResponse(
         instance_id=instance_id,
         ready=instance.is_ready,
@@ -234,28 +234,28 @@ def force_render(
 ) -> RenderResponse:
     """
     Force frame rendering.
-    
+
     Optional endpoint allowing LLSS to request a fresh render
     (e.g. after reconnect or cache loss).
-    
+
     The instance_id is the LLSS-assigned instance ID.
     """
     # Find instance by LLSS instance ID
     stmt = select(Instance).where(Instance.llss_instance_id == instance_id)
     instance = db.scalars(stmt).first()
-    
+
     if not instance:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instance not found: {instance_id}",
         )
-    
+
     # Queue a render task
     background_tasks.add_task(
         _render_and_submit_frame,
         instance_id=instance.id,
     )
-    
+
     return RenderResponse(
         status="scheduled",
         frame_id=None,  # Will be available after background task completes
@@ -270,27 +270,25 @@ def force_render(
 async def _render_and_submit_frame(instance_id: str) -> Optional[str]:
     """
     Render current screen and submit to LLSS.
-    
+
     This is called as a background task after input processing or render request.
-    
+
     Returns the frame ID if successful, None otherwise.
     """
     from hlss.database import SessionLocal
     from hlss.services.llss import LLSSService
-    
+
     db = SessionLocal()
     try:
         instance = db.get(Instance, instance_id)
         if not instance or not instance.llss_instance_id:
             return None
-        
+
         renderer = RendererService()
-        
+
         # Render based on current screen
         if instance.current_screen == ScreenType.SETUP:
-            image_data = renderer.render_setup_screen(
-                config_url=instance.configuration_url or ""
-            )
+            image_data = renderer.render_setup_screen(config_url=instance.configuration_url or "")
         elif instance.current_screen == ScreenType.NEW_MATCH:
             # Get linked account for new match screen
             username = "Not configured"
@@ -298,7 +296,7 @@ async def _render_and_submit_frame(instance_id: str) -> Optional[str]:
                 account = db.get(LichessAccount, instance.linked_account_id)
                 if account:
                     username = account.username
-            
+
             image_data = renderer.render_new_match_screen(
                 selected_user=username,
                 selected_color="random",
@@ -306,20 +304,27 @@ async def _render_and_submit_frame(instance_id: str) -> Optional[str]:
             )
         elif instance.current_screen == ScreenType.PLAY:
             # Render play screen - requires game state
-            from hlss.models import Game
             import chess
-            
+
+            from hlss.models import Game
+
             if instance.current_game_id:
                 game = db.get(Game, instance.current_game_id)
                 if game:
                     board = chess.Board(game.fen)
-                    player_color = chess.WHITE if game.player_color.value == "white" else chess.BLACK
-                    
+                    player_color = (
+                        chess.WHITE if game.player_color.value == "white" else chess.BLACK
+                    )
+
                     image_data = renderer.render_play_screen(
                         board=board,
                         player_color=player_color,
                         opponent_name=game.opponent_username or "Unknown",
-                        player_name=instance.linked_account.username if instance.linked_account else "Player",
+                        player_name=(
+                            instance.linked_account.username
+                            if instance.linked_account
+                            else "Player"
+                        ),
                         move_state=None,
                         button_actions=[],
                     )
@@ -339,13 +344,11 @@ async def _render_and_submit_frame(instance_id: str) -> Optional[str]:
                 )
         else:
             # Default to setup screen
-            image_data = renderer.render_setup_screen(
-                config_url=instance.configuration_url or ""
-            )
-        
+            image_data = renderer.render_setup_screen(config_url=instance.configuration_url or "")
+
         # Compute hash
         image_hash = hashlib.sha256(image_data).hexdigest()
-        
+
         # Store frame locally
         frame = Frame(
             screen_type=instance.current_screen,
@@ -357,7 +360,7 @@ async def _render_and_submit_frame(instance_id: str) -> Optional[str]:
         db.add(frame)
         db.commit()
         db.refresh(frame)
-        
+
         # Submit to LLSS
         llss = LLSSService()
         try:
@@ -365,19 +368,19 @@ async def _render_and_submit_frame(instance_id: str) -> Optional[str]:
                 instance_id=instance.llss_instance_id,
                 image_data=image_data,
             )
-            
+
             # Update frame with LLSS response
             frame.llss_frame_id = result.get("frame_id")
             frame.submitted_at = datetime.utcnow()
             instance.last_frame_id = frame.id
             db.commit()
-            
+
             return frame.id
         except Exception as e:
             # Log error but don't fail
             print(f"Failed to submit frame to LLSS: {e}")
             return frame.id
-    
+
     finally:
         db.close()
 
@@ -410,7 +413,7 @@ def get_instance(instance_id: str, db: DbSession) -> Instance:
 def create_instance(data: InstanceCreate, db: DbSession) -> Instance:
     """
     Create a new HLSS instance.
-    
+
     This creates a local instance record. Registration with LLSS
     is handled separately by the LLSS integration service.
     """
@@ -430,8 +433,8 @@ def create_instance(data: InstanceCreate, db: DbSession) -> Instance:
 def update_instance_screen(
     instance_id: str,
     screen_type: str,
+    db: DbSession,
     game_id: str | None = None,
-    db: DbSession = Depends(get_db),
 ) -> Instance:
     """Update the current screen for an instance."""
     instance = db.get(Instance, instance_id)
@@ -469,21 +472,21 @@ def link_account_to_instance(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Instance not found",
         )
-    
+
     account = db.get(LichessAccount, account_id)
     if not account:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Account not found",
         )
-    
+
     instance.linked_account_id = account_id
     instance.is_ready = True
     instance.needs_configuration = False
     instance.current_screen = ScreenType.NEW_MATCH
     db.commit()
     db.refresh(instance)
-    
+
     return instance
 
 
