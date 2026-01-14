@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # Database
-    database_url: PostgresDsn = "postgresql://hlss:hlss@db:5432/hlss"  # type: ignore
+    database_url: PostgresDsn = "postgresql://lichess_hlss_root:password@localhost:5432/eink_lichess_hlss"  # type: ignore
+    database_schema: str = "lichess"
 
     # LLSS Integration
     llss_base_url: str = "https://eink.tutu.eng.br/api"

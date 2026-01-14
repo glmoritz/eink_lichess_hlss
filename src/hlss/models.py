@@ -192,14 +192,43 @@ class Instance(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     instance_type: Mapped[str] = mapped_column(String(50), default="chess")
     
+    # LLSS callback URLs (set during initialization by LLSS)
+    callback_frames: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    callback_inputs: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    callback_notify: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    
+    # Display capabilities (set during initialization by LLSS)
+    display_width: Mapped[int] = mapped_column(Integer, default=800)
+    display_height: Mapped[int] = mapped_column(Integer, default=480)
+    display_bit_depth: Mapped[int] = mapped_column(Integer, default=1)
+    
+    # Instance readiness state
+    is_initialized: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_ready: Mapped[bool] = mapped_column(Boolean, default=False)
+    needs_configuration: Mapped[bool] = mapped_column(Boolean, default=True)
+    configuration_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    
     # Current state
     current_screen: Mapped[ScreenType] = mapped_column(Enum(ScreenType), default=ScreenType.SETUP)
     current_game_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     
+    # Linked Lichess account
+    linked_account_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("lichess_accounts.id"), nullable=True
+    )
+    
     # Navigation state for move input
     move_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON blob
+    
+    # Last frame tracking
+    last_frame_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
+    )
+    
+    # Relationships
+    linked_account: Mapped[Optional["LichessAccount"]] = relationship(
+        "LichessAccount", foreign_keys=[linked_account_id]
     )

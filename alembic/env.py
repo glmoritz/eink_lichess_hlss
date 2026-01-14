@@ -5,7 +5,7 @@ Alembic environment configuration.
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from hlss.config import get_settings
 from hlss.database import Base
@@ -27,9 +27,10 @@ if config.config_file_name is not None:
 # Model metadata for autogenerate support
 target_metadata = Base.metadata
 
-# Get database URL from settings
+# Get database URL and schema from settings
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", str(settings.database_url))
+SCHEMA = settings.database_schema
 
 
 def run_migrations_offline() -> None:
@@ -40,6 +41,8 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_schemas=True,
+        version_table_schema=SCHEMA,
     )
 
     with context.begin_transaction():
@@ -55,9 +58,18 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # Create schema if it doesn't exist
+        connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
+        connection.commit()
+
+        # Set search path
+        connection.execute(text(f"SET search_path TO {SCHEMA}, public"))
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
+            include_schemas=True,
+            version_table_schema=SCHEMA,
         )
 
         with context.begin_transaction():

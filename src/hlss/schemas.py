@@ -203,6 +203,24 @@ class InstanceResponse(BaseModel):
     instance_type: str
     current_screen: str
     current_game_id: Optional[str]
+    
+    # LLSS integration
+    callback_frames: Optional[str] = None
+    callback_inputs: Optional[str] = None
+    callback_notify: Optional[str] = None
+    
+    # Display capabilities
+    display_width: int = 800
+    display_height: int = 480
+    display_bit_depth: int = 1
+    
+    # Instance state
+    is_initialized: bool = False
+    is_ready: bool = False
+    needs_configuration: bool = True
+    configuration_url: Optional[str] = None
+    linked_account_id: Optional[str] = None
+    
     created_at: datetime
     updated_at: datetime
 
@@ -267,3 +285,83 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     version: str
     database: str = "connected"
+
+
+# ============================================================================
+# LLSS Integration Schemas (HLSS OpenAPI spec)
+# ============================================================================
+
+
+class DisplayCapabilities(BaseModel):
+    """Display capabilities from LLSS."""
+
+    width: int = Field(..., description="Display width in pixels")
+    height: int = Field(..., description="Display height in pixels")
+    bit_depth: int = Field(..., description="Color depth in bits")
+
+
+class InstanceCallbacks(BaseModel):
+    """Callback URLs provided by LLSS for the instance."""
+
+    frames: str = Field(..., description="URL for submitting frames")
+    inputs: str = Field(..., description="URL for receiving input events")
+    notify: str = Field(..., description="URL for state change notifications")
+
+
+class InstanceInitRequest(BaseModel):
+    """
+    Request from LLSS to initialize an HLSS instance.
+    
+    Called by LLSS when a new instance is created.
+    Establishes trust, stores callbacks, and initializes state.
+    """
+
+    instance_id: str = Field(..., description="LLSS-assigned instance identifier")
+    callbacks: InstanceCallbacks = Field(..., description="Callback URLs for communication")
+    display: DisplayCapabilities = Field(..., description="Display characteristics")
+
+
+class InstanceInitResponse(BaseModel):
+    """
+    Response to LLSS after instance initialization.
+    """
+
+    status: str = Field(default="initialized", description="Initialization status")
+    needs_configuration: bool = Field(
+        default=True,
+        description="Whether user configuration is required"
+    )
+    configuration_url: Optional[str] = Field(
+        default=None,
+        description="URL for user configuration (if needs_configuration is True)"
+    )
+
+
+class InstanceStatusResponse(BaseModel):
+    """
+    Instance status response.
+    
+    Returns the current status of the instance, including whether
+    user configuration is required.
+    """
+
+    instance_id: str
+    ready: bool = Field(description="Whether instance is ready to serve frames")
+    needs_configuration: bool = Field(
+        description="Whether user configuration is required"
+    )
+    configuration_url: Optional[str] = Field(
+        default=None,
+        description="URL for user configuration"
+    )
+    active_screen: Optional[str] = Field(
+        default=None,
+        description="Logical screen currently active (e.g. new_match, game_123)"
+    )
+
+
+class RenderResponse(BaseModel):
+    """Response after a render request."""
+
+    status: str = Field(default="scheduled", description="Render status")
+    frame_id: Optional[str] = Field(default=None, description="Generated frame ID if available")
