@@ -19,6 +19,7 @@ dependencies = [
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "httpx>=0.26.0",
+    "PyJWT>=2.8.0",
     "python-chess>=1.999",
     "pillow>=10.2.0",
     "qrcode[pil]>=7.4.2",

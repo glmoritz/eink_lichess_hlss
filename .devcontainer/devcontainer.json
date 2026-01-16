@@ -43,28 +43,14 @@
       ]
     }
   },
-
-  "features": {
-    "ghcr.io/devcontainers/features/git:1": {}
-  },
-
-  "forwardPorts": [8000],
-  "portsAttributes": {
-    "8000": {
-      "label": "HLSS API",
-      "onAutoForward": "notify"
-    }
-  },
-
+  
   "postCreateCommand": "pip install -e '.[dev]'",
 
   "remoteUser": "hlss",
-
   "containerEnv": {
     "PYTHONPATH": "/app/src"
   },
-
   "runArgs": [
-    "--env-file", "${localWorkspaceFolder}/.env"
+    "--env-file", "${localWorkspaceFolder}/.env", "--network=host"
   ]
 }

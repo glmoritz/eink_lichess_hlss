@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng-dev \
     libfreetype6-dev \
     fonts-dejavu-core \
+    iputils-ping \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

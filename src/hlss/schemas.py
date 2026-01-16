@@ -8,7 +8,6 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # ============================================================================
 # Enums
 # ============================================================================
@@ -203,24 +202,24 @@ class InstanceResponse(BaseModel):
     instance_type: str
     current_screen: str
     current_game_id: Optional[str]
-    
+
     # LLSS integration
     callback_frames: Optional[str] = None
     callback_inputs: Optional[str] = None
     callback_notify: Optional[str] = None
-    
+
     # Display capabilities
     display_width: int = 800
     display_height: int = 480
     display_bit_depth: int = 1
-    
+
     # Instance state
     is_initialized: bool = False
     is_ready: bool = False
     needs_configuration: bool = True
     configuration_url: Optional[str] = None
     linked_account_id: Optional[str] = None
-    
+
     created_at: datetime
     updated_at: datetime
 
@@ -311,7 +310,7 @@ class InstanceCallbacks(BaseModel):
 class InstanceInitRequest(BaseModel):
     """
     Request from LLSS to initialize an HLSS instance.
-    
+
     Called by LLSS when a new instance is created.
     Establishes trust, stores callbacks, and initializes state.
     """
@@ -328,35 +327,27 @@ class InstanceInitResponse(BaseModel):
 
     status: str = Field(default="initialized", description="Initialization status")
     needs_configuration: bool = Field(
-        default=True,
-        description="Whether user configuration is required"
+        default=True, description="Whether user configuration is required"
     )
     configuration_url: Optional[str] = Field(
-        default=None,
-        description="URL for user configuration (if needs_configuration is True)"
+        default=None, description="URL for user configuration (if needs_configuration is True)"
     )
 
 
 class InstanceStatusResponse(BaseModel):
     """
     Instance status response.
-    
+
     Returns the current status of the instance, including whether
     user configuration is required.
     """
 
     instance_id: str
     ready: bool = Field(description="Whether instance is ready to serve frames")
-    needs_configuration: bool = Field(
-        description="Whether user configuration is required"
-    )
-    configuration_url: Optional[str] = Field(
-        default=None,
-        description="URL for user configuration"
-    )
+    needs_configuration: bool = Field(description="Whether user configuration is required")
+    configuration_url: Optional[str] = Field(default=None, description="URL for user configuration")
     active_screen: Optional[str] = Field(
-        default=None,
-        description="Logical screen currently active (e.g. new_match, game_123)"
+        default=None, description="Logical screen currently active (e.g. new_match, game_123)"
     )
 
 
@@ -365,3 +356,23 @@ class RenderResponse(BaseModel):
 
     status: str = Field(default="scheduled", description="Render status")
     frame_id: Optional[str] = Field(default=None, description="Generated frame ID if available")
+
+
+class FrameMetadataResponse(BaseModel):
+    """Response with current frame metadata for an instance."""
+
+    instance_id: str = Field(..., description="LLSS instance ID")
+    has_frame: bool = Field(..., description="Whether a frame exists for this instance")
+    frame_id: Optional[str] = Field(default=None, description="Internal frame ID")
+    frame_hash: Optional[str] = Field(default=None, description="SHA256 hash of the frame image")
+    screen_type: Optional[str] = Field(default=None, description="Current screen type")
+    width: Optional[int] = Field(default=None, description="Frame width in pixels")
+    height: Optional[int] = Field(default=None, description="Frame height in pixels")
+    created_at: Optional[datetime] = Field(default=None, description="When the frame was created")
+
+
+class FrameSendResponse(BaseModel):
+    """Response after requesting frame re-send."""
+
+    status: str = Field(..., description="Send status: 'sent', 'no_frame', 'scheduled'")
+    frame_id: Optional[str] = Field(default=None, description="Frame ID that was/will be sent")

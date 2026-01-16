@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # LLSS Integration
     llss_base_url: str = "https://eink.tutu.eng.br/api"
     llss_api_token: str = ""
+    hlss_shared_key: str = ""
+    llss_token_ttl_seconds: int = 86400
 
     # Lichess
     lichess_base_url: str = "https://lichess.org"

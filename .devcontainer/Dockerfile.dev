@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     sudo \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with sudo access
