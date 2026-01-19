@@ -33,6 +33,10 @@ paths:
       description: >
         Called by LLSS when a new instance is created.
         Establishes trust, stores callbacks, and initializes state.
+        
+        **Callback requirements**
+        - `callbacks.frames` points to LLSS `POST /instances/{instance_id}/frames`.
+          HLSS must upload a PNG as `multipart/form-data` with a file field named `file`.
       requestBody:
         required: true
         content:
@@ -201,6 +205,7 @@ components:
             frames:
               type: string
               format: uri
+              description: LLSS frame upload callback (expects multipart/form-data with `file` field)
             inputs:
               type: string
               format: uri

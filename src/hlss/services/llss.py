@@ -21,12 +21,14 @@ class LLSSService:
 
     def _build_headers(
         self,
-        content_type: str,
+        content_type: str | None,
         token_type: str | None = None,
         subject: str | None = None,
     ) -> dict[str, str]:
         """Build headers for LLSS requests with shared-key JWTs."""
-        headers = {"Content-Type": content_type}
+        headers: dict[str, str] = {}
+        if content_type:
+            headers["Content-Type"] = content_type
 
         token: str | None = None
         if self.settings.hlss_shared_key and token_type:
@@ -89,7 +91,7 @@ class LLSSService:
             Frame creation response including frame_id and hash
         """
         headers = self._build_headers(
-            content_type="image/png",
+            content_type=None,
             token_type="instance_access",
             subject=instance_id,
         )
@@ -98,7 +100,7 @@ class LLSSService:
             response = await client.post(
                 f"{self.base_url}/instances/{instance_id}/frames",
                 headers=headers,
-                content=image_data,
+                files={"file": ("frame.png", image_data, "image/png")},
             )
             response.raise_for_status()
             return response.json()

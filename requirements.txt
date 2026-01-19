@@ -23,3 +23,6 @@ berserk>=0.13.0
 # Image rendering
 pillow>=10.2.0
 qrcode[pil]>=7.4.2
+
+# HTML rendering
+playwright>=1.41.0

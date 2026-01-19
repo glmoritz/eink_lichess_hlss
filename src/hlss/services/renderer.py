@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from hlss.config import get_settings
 from hlss.schemas import ButtonAction, MoveState, ScreenType
+from hlss.services.html_renderer import render_html_file_to_png
 
 
 class RendererService:
@@ -22,7 +23,16 @@ class RendererService:
     # Default colors for monochrome e-Ink
     WHITE = (255, 255, 255)
     BLACK = (0, 0, 0)
-    GRAY = (128, 128, 128)
+    LIGHT_GRAY = (210, 210, 210)
+    MID_GRAY = (150, 150, 150)
+    DARK_GRAY = (80, 80, 80)
+    GRAY = MID_GRAY
+
+    HEADER_HEIGHT = 50
+    FOOTER_HEIGHT = 50
+    SCREEN_HEIGHT = 480
+    SCREEN_WIDTH = 800
+    MARGIN = 10
 
     # Chess piece unicode symbols
     PIECE_SYMBOLS = {
@@ -80,24 +90,183 @@ class RendererService:
         """Create a base white image."""
         return Image.new("RGB", (self.width, self.height), self.WHITE)
 
+    def _content_bounds(self) -> tuple[int, int, int, int]:
+        """Get the drawable content bounds between header and footer."""
+        top = self.HEADER_HEIGHT + self.MARGIN
+        bottom = self.height - self.FOOTER_HEIGHT - self.MARGIN
+        left = self.MARGIN
+        right = self.width - self.MARGIN
+        return left, top, right, bottom
+
+    def _render_header(self, draw: ImageDraw.ImageDraw, title: str) -> None:
+        """Render the consistent header with nav and enter/esc hints."""
+        draw.rectangle([0, 0, self.width, self.HEADER_HEIGHT], fill=self.LIGHT_GRAY)
+        draw.line(
+            [0, self.HEADER_HEIGHT - 1, self.width, self.HEADER_HEIGHT - 1], fill=self.DARK_GRAY
+        )
+
+        # Title
+        title_x = self.SCREEN_HEIGHT / 2
+        title_y = self.HEADER_HEIGHT / 2
+        draw.text((title_x, title_y), title, fill=self.BLACK, font=self._font_large, align="center")
+
+        # HL left/right buttons (top-left)
+        button_width = self.HEADER_HEIGHT - 10
+        button_height = button_width
+
+        self._draw_header_button(
+            draw,
+            self.MARGIN + button_width + self.MARGIN,
+            self.MARGIN,
+            button_width,
+            button_height,
+            "◀",
+            self.WHITE,
+        )
+
+        self._draw_header_button(
+            draw,
+            self.MARGIN + button_width + self.MARGIN,
+            self.MARGIN,
+            button_width,
+            button_height,
+            "▶",
+            self.WHITE,
+        )
+
+        enter_width = self.HEADER_HEIGHT * 3
+        enter_height = button_width
+
+        # ENTER/ESC buttons (top-right)
+        self._draw_header_button(
+            draw,
+            self.SCREEN_WIDTH - self.MARGIN - enter_width - self.MARGIN - enter_width - self.MARGIN,
+            self.MARGIN,
+            enter_width,
+            enter_height,
+            "ENTER",
+            self.DARK_GRAY,
+        )
+
+        self._draw_header_button(
+            draw,
+            self.SCREEN_WIDTH - self.MARGIN - enter_width - self.MARGIN,
+            self.MARGIN,
+            enter_width,
+            enter_height,
+            "VOLTAR",
+            self.WHITE,
+        )
+
+    def _draw_header_button(
+        self,
+        draw: ImageDraw.ImageDraw,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        label: str = "",
+        fill: tuple[int, int, int] = (255, 255, 255),
+    ) -> None:
+        """Draw a small header button with an icon and label."""
+        draw.rounded_rectangle(
+            [x, y, x + width, y + height], radius=6, outline=self.DARK_GRAY, fill=fill
+        )
+        draw.text(
+            ((x + width) / 2, (y + height) / 2),
+            label,
+            fill=self.BLACK,
+            font=self._font,
+            align="center",
+        )
+
+    def _render_context_bar(
+        self,
+        draw: ImageDraw.ImageDraw,
+        button_actions: list[ButtonAction],
+    ) -> dict[str, tuple[int, int]]:
+        """Render the bottom context bar for 8 buttons.
+
+        Returns mapping of button value to its center coordinates.
+        """
+        draw.rectangle(
+            [0, self.height - self.FOOTER_HEIGHT, self.width, self.height],
+            fill=self.LIGHT_GRAY,
+        )
+        draw.line(
+            [0, self.height - self.FOOTER_HEIGHT, self.width, self.height - self.FOOTER_HEIGHT],
+            fill=self.DARK_GRAY,
+        )
+
+        # Map provided actions
+        action_map = {action.button.value: action for action in button_actions}
+
+        bar_top = self.height - self.FOOTER_HEIGHT + 12
+        bar_height = self.FOOTER_HEIGHT - 24
+        slot_width = (self.width - 2 * self.MARGIN) // 8
+        centers: dict[str, tuple[int, int]] = {}
+
+        for i in range(8):
+            btn_value = f"BTN_{i + 1}"
+            x0 = self.MARGIN + i * slot_width
+            x1 = x0 + slot_width - 8
+            y0 = bar_top
+            y1 = bar_top + bar_height
+            action = action_map.get(btn_value)
+            enabled = action.enabled if action else True
+            label = action.label if action else ""
+
+            outline = self.DARK_GRAY
+            fill = self.WHITE if enabled else self.LIGHT_GRAY
+            text_color = self.BLACK if enabled else self.MID_GRAY
+
+            draw.rounded_rectangle([x0, y0, x1, y1], radius=10, outline=outline, fill=fill)
+            draw.text((x0 + 8, y0 + 8), str(i + 1), fill=self.DARK_GRAY, font=self._font_small)
+
+            if label:
+                text = label[:10]
+                draw.text((x0 + 8, y0 + 30), text, fill=text_color, font=self._font_small)
+
+            centers[btn_value] = ((x0 + x1) // 2, (y0 + y1) // 2)
+
+        return centers
+
+    def _draw_curve(
+        self,
+        draw: ImageDraw.ImageDraw,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        height: int,
+        color: tuple[int, int, int],
+        width: int = 2,
+    ) -> None:
+        """Draw a soft curved connector between two points."""
+        mid_x = (start[0] + end[0]) // 2
+        mid_y = min(start[1], end[1]) - height
+        points = [
+            start,
+            (mid_x, mid_y),
+            end,
+        ]
+        draw.line(points, fill=color, width=width, joint="curve")
+
     def render_setup_screen(self, config_url: str) -> bytes:
         """
         Render the initial setup screen with QR code.
-        
+
         Args:
             config_url: URL for web configuration
-            
+
         Returns:
             PNG image data
         """
         img = self._create_base_image()
         draw = ImageDraw.Draw(img)
 
-        # Title
-        title = "Lichess e-Ink Setup"
-        draw.text((20, 20), title, fill=self.BLACK, font=self._font_large)
+        self._render_header(draw, "Setup")
+        self._render_context_bar(draw, [])
+        left, top, right, bottom = self._content_bounds()
 
-        # Instructions
         instructions = [
             "No Lichess account configured.",
             "",
@@ -107,12 +276,11 @@ class RendererService:
             "to configure your account.",
         ]
 
-        y = 70
+        y = top + 8
         for line in instructions:
-            draw.text((20, y), line, fill=self.BLACK, font=self._font)
+            draw.text((left, y), line, fill=self.BLACK, font=self._font)
             y += 22
 
-        # Generate QR code
         qr = qrcode.QRCode(
             version=1,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -125,9 +293,8 @@ class RendererService:
         qr_img = qr.make_image(fill_color="black", back_color="white")
         qr_img = qr_img.convert("RGB")
 
-        # Position QR code on the right side
-        qr_x = self.width - qr_img.width - 40
-        qr_y = (self.height - qr_img.height) // 2
+        qr_x = right - qr_img.width
+        qr_y = top + (bottom - top - qr_img.height) // 2
         img.paste(qr_img, (qr_x, qr_y))
 
         return self._image_to_bytes(img)
@@ -140,33 +307,26 @@ class RendererService:
     ) -> bytes:
         """
         Render the new match creation screen.
-        
+
         Args:
             selected_user: Currently selected Lichess username
             selected_color: Selected color (white/black/random)
             button_actions: List of button action mappings
-            
+
         Returns:
             PNG image data
         """
-        img = self._create_base_image()
-        draw = ImageDraw.Draw(img)
-
-        # Title
-        draw.text((20, 20), "New Match", fill=self.BLACK, font=self._font_large)
-
-        # Current selection
-        y = 80
-        draw.text((20, y), f"Player: {selected_user}", fill=self.BLACK, font=self._font)
-        y += 30
-        draw.text((20, y), f"Color: {selected_color.capitalize()}", fill=self.BLACK, font=self._font)
-        y += 30
-        draw.text((20, y), "Type: Correspondence", fill=self.BLACK, font=self._font)
-
-        # Button mappings on the right
-        self._render_button_panel(draw, button_actions)
-
-        return self._image_to_bytes(img)
+        replacements = {
+            "@@ADVERSARY@@": selected_user,
+            "@@PLAYERNAME@@": "Player",
+            "@@PLAYERCOLOR@@": selected_color.capitalize(),
+        }
+        return render_html_file_to_png(
+            "/app/new_match_screen.html",
+            width=self.width,
+            height=self.height,
+            replacements=replacements,
+        )
 
     def render_play_screen(
         self,
@@ -181,7 +341,7 @@ class RendererService:
     ) -> bytes:
         """
         Render the game play screen.
-        
+
         Args:
             board: Current chess board state
             player_color: Which color the player is
@@ -191,17 +351,23 @@ class RendererService:
             button_actions: List of button action mappings
             last_move: Last move made (for highlighting)
             pending_move: Move being constructed (for arrow)
-            
+
         Returns:
             PNG image data
         """
         img = self._create_base_image()
         draw = ImageDraw.Draw(img)
 
+        self._render_header(draw, "Play")
+        self._render_context_bar(draw, button_actions)
+        left, top, right, bottom = self._content_bounds()
+
         # Calculate board dimensions (left side of screen)
-        board_size = min(self.height - 40, self.width // 2 - 40)
-        board_x = 20
-        board_y = (self.height - board_size) // 2
+        content_height = bottom - top
+        content_width = right - left
+        board_size = min(content_height, content_width // 2 - 20)
+        board_x = left
+        board_y = top + (content_height - board_size) // 2
 
         # Render chess board
         self._render_board(
@@ -219,7 +385,7 @@ class RendererService:
         panel_x = board_x + board_size + 20
 
         # Player names
-        y = 20
+        y = top
         # Opponent at top (or bottom depending on color)
         draw.text((panel_x, y), f"⚫ {opponent_name}", fill=self.BLACK, font=self._font)
         y += 25
@@ -242,19 +408,21 @@ class RendererService:
             for i, move in enumerate(moves[-10:]):
                 san = temp_board.san(move)
                 temp_board.push(move)
-                draw.text((panel_x, y), f"{len(temp_board.move_stack)}. {san}", fill=self.BLACK, font=self._font_small)
+                draw.text(
+                    (panel_x, y),
+                    f"{len(temp_board.move_stack)}. {san}",
+                    fill=self.BLACK,
+                    font=self._font_small,
+                )
                 y += 16
 
         # Player at bottom
-        y = self.height - 50
+        y = bottom - 24
         draw.text((panel_x, y), f"⚪ {player_name}", fill=self.BLACK, font=self._font)
 
         # Move state indicator
         if move_state:
-            self._render_move_state(draw, move_state, panel_x, self.height - 120)
-
-        # Button panel
-        self._render_button_panel(draw, button_actions)
+            self._render_move_state(draw, move_state, panel_x, bottom - 80)
 
         return self._image_to_bytes(img)
 

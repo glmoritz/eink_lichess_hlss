@@ -6,6 +6,7 @@ input handling, and frame rendering.
 """
 
 import hashlib
+import json
 from datetime import datetime
 from typing import Annotated, Optional
 
@@ -457,9 +458,22 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
             if account:
                 username = account.username
 
+        selected_color = "random"
+        if instance.move_state:
+            try:
+                data = json.loads(instance.move_state)
+                if isinstance(data, dict):
+                    new_match = data.get("new_match")
+                    if isinstance(new_match, dict):
+                        color = new_match.get("color")
+                        if color in ["random", "white", "black"]:
+                            selected_color = color
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
         image_data = renderer.render_new_match_screen(
             selected_user=username,
-            selected_color="random",
+            selected_color=selected_color,
             button_actions=[],
         )
     elif instance.current_screen == ScreenType.PLAY:

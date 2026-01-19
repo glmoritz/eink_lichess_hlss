@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>New Game – eInk Mockup</title>
+<style>
+  :root {
+    --white: #ffffff;
+    --light-gray: #d5d5d5;
+    --dark-gray: #555555;
+    --black: #000000;
+  }
+
+  body {
+    background: #999;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    font-family: "Inter", "DejaVu Sans", sans-serif;
+  }
+
+  .screen {
+    width: 800px;
+    height: 480px;
+    background: var(--white);
+    border: 4px solid var(--dark-gray);
+    box-sizing: border-box;
+    position: relative;
+  }
+
+  /* ─────────── TOP BAR ─────────── */
+
+  .top-bar {
+    height: 56px;
+    background: var(--light-gray);
+    border-bottom: 2px solid var(--dark-gray);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    box-sizing: border-box;
+  }
+
+  .hl {
+    width: 140px;
+    color: var(--black);
+    font-size: 16px;
+  }
+
+  .hl span {
+    margin-right: 10px;
+  }
+
+  .title {
+    flex: 1;
+    text-align: center;
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--black);
+  }
+
+  .top-actions {
+    width: 180px;
+    text-align: right;
+  }
+
+  .action-btn {
+    display: inline-block;
+    padding: 6px 14px;
+    margin-left: 8px;
+    background: var(--dark-gray);
+    color: var(--white);
+    border-radius: 8px;
+    font-size: 16px;
+  }
+
+  /* ─────────── CONTENT ─────────── */
+
+  .content {
+    position: absolute;
+    top: 56px;
+    bottom: 112px;
+    width: 100%;
+  }
+
+  .card {
+    width: 480px;
+    height: 88px;
+    margin: 24px auto;
+    background: var(--white);
+    border: 2px solid var(--dark-gray);
+    border-radius: 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .card .main {
+    font-size: 30px;
+    font-weight: 600;
+    color: var(--black);
+  }
+
+  .card .sub {
+    font-size: 15px;
+    color: var(--dark-gray);
+  }
+
+  .arches {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* ─────────── BOTTOM BAR ─────────── */
+
+  .bottom-bar {
+    position: absolute;
+    bottom: 0;
+    height: 50px;
+    width: 100%;
+    background: var(--light-gray);
+    border-top: 2px solid var(--dark-gray);
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+  }
+
+  .soft-btn {
+    border-left: 1px solid var(--dark-gray);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 15px;
+    color: var(--black);
+  }
+
+  .soft-btn.inactive {
+    color: var(--dark-gray);
+  }
+
+  .helper {
+    position: absolute;
+    bottom: 118px;
+    width: 100%;
+    text-align: center;
+    font-size: 14px;
+    color: var(--dark-gray);
+  }
+</style>
+</head>
+<body>
+
+<div class="screen">
+
+  <!-- TOP BAR -->
+  <div class="top-bar">
+    <div class="hl">
+      <span>◀</span>
+      <span>▶</span>
+    </div>
+    <div class="title">Criar Jogo</div>
+    <div class="top-actions">
+      <span class="action-btn">ENTER</span>
+      <span class="action-btn">X</span>
+    </div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="content">
+    <div class="card" style="margin-top: 32px;">
+      <div class="sub">Adversário</div>      
+      <div class="main">@@ADVERSARY@@</div>      
+    </div>
+
+    <div class="card">
+      <div class="sub">@@PLAYERNAME@@ joga de</div>
+      <div class="main">♔ @@PLAYERCOLOR@@</div>      
+    </div>
+
+    <!-- Arches -->
+    <div class="arches">
+      <svg>
+        
+      </svg>
+    </div>
+  </div>
+
+  <div class="helper">Pressione ENTER para Criar</div>
+
+  <!-- BOTTOM BAR -->
+  <div class="bottom-bar">
+    <div class="soft-btn">◀ Adversário</div>
+    <div class="soft-btn inactive"></div>
+    <div class="soft-btn">◀ Cor</div>
+    <div class="soft-btn inactive"></div>
+    <div class="soft-btn inactive"></div>
+    <div class="soft-btn">Cor ▶</div>
+    <div class="soft-btn inactive"></div>
+    <div class="soft-btn">Adversário ▶</div>
+  </div>
+</div>
+</body>
+</html>

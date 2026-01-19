@@ -6,14 +6,17 @@ import json
 from typing import Optional
 
 import chess
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hlss.models import ButtonType, Game, Instance, ScreenType
+from hlss.models import ButtonType, Game, GameStatus, Instance, LichessAccount, ScreenType
 from hlss.schemas import MoveState, MoveStateStep
 
 
 class InputProcessorService:
     """Service for processing input events and updating state."""
+
+    NEW_MATCH_COLORS = ["random", "white", "black"]
 
     # Piece selection mapping (BTN_1 through BTN_8)
     PIECE_BUTTONS = {
@@ -61,11 +64,11 @@ class InputProcessorService:
     ) -> tuple[bool, Optional[str]]:
         """
         Process a button press for the given instance.
-        
+
         Args:
             instance: The HLSS instance
             button: The button that was pressed
-            
+
         Returns:
             Tuple of (state_changed, error_message)
         """
@@ -88,15 +91,18 @@ class InputProcessorService:
     def _navigate_screen(self, instance: Instance, direction: int) -> tuple[bool, Optional[str]]:
         """Navigate between screens."""
         screens = [ScreenType.NEW_MATCH, ScreenType.PLAY]
-        
+
         # Get games for this instance to determine available play screens
-        games = self.db.query(Game).filter(
-            Game.status.in_(["created", "started"])
-        ).all()
+        games = (
+            self.db.query(Game)
+            .filter(Game.status.in_([GameStatus.CREATED, GameStatus.STARTED]))
+            .all()
+        )
 
         if instance.current_screen == ScreenType.SETUP:
             # Can't navigate from setup until configured
-            return False, "Configure an account first"
+            if instance.needs_configuration:
+                return False, "Configure an account first"
 
         try:
             current_idx = screens.index(instance.current_screen)
@@ -111,11 +117,12 @@ class InputProcessorService:
         self,
         instance: Instance,
         button: ButtonType,
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """Handle input on the setup screen."""
-        # Setup screen doesn't respond to button input
-        # Configuration is done via web interface
-        return False, None
+        # Any button press returns to new match screen
+        instance.current_screen = ScreenType.NEW_MATCH
+        self.db.commit()
+        return True, None
 
     def _handle_new_match_input(
         self,
@@ -123,13 +130,95 @@ class InputProcessorService:
         button: ButtonType,
     ) -> tuple[bool, Optional[str]]:
         """Handle input on the new match screen."""
-        # TODO: Implement new match screen input handling
         # BTN_1 - Cycle users
         # BTN_2 - Cycle colors
         # BTN_8 - Show QR code
         # ENTER - Create match
         # ESC - Cancel
+        state = self._load_new_match_state(instance)
+
+        if button == ButtonType.BTN_1:
+            accounts = list(
+                self.db.scalars(
+                    select(LichessAccount)
+                    .where(LichessAccount.is_enabled == True)  # noqa: E712
+                    .order_by(LichessAccount.created_at.asc())
+                ).all()
+            )
+            if not accounts:
+                return False, "No enabled accounts"
+
+            current_idx = next(
+                (i for i, acc in enumerate(accounts) if acc.id == state["account_id"]),
+                -1,
+            )
+            next_account = accounts[(current_idx + 1) % len(accounts)]
+            instance.linked_account_id = next_account.id
+            state["account_id"] = next_account.id
+            self._save_new_match_state(instance, state)
+            return True, None
+
+        if button == ButtonType.BTN_2:
+            try:
+                idx = self.NEW_MATCH_COLORS.index(state["color"])
+            except ValueError:
+                idx = 0
+            state["color"] = self.NEW_MATCH_COLORS[(idx + 1) % len(self.NEW_MATCH_COLORS)]
+            self._save_new_match_state(instance, state)
+            return True, None
+
+        if button == ButtonType.BTN_8:
+            if not instance.configuration_url:
+                return False, "No configuration URL"
+            instance.current_screen = ScreenType.SETUP
+            self.db.commit()
+            return True, None
+
+        if button == ButtonType.ENTER:
+            if not state.get("account_id"):
+                return False, "No account selected"
+            # Game creation via Lichess is not yet implemented
+            return False, "Game creation not yet implemented"
+
+        if button == ButtonType.ESC:
+            return False, None
+
         return False, None
+
+    def _load_new_match_state(self, instance: Instance) -> dict[str, Optional[str]]:
+        """Load new match selection state."""
+        state: dict[str, Optional[str]] = {
+            "account_id": instance.linked_account_id,
+            "color": "random",
+        }
+
+        if instance.move_state:
+            try:
+                data = json.loads(instance.move_state)
+                if isinstance(data, dict):
+                    new_match = data.get("new_match")
+                    if isinstance(new_match, dict):
+                        account_id = new_match.get("account_id")
+                        if account_id:
+                            state["account_id"] = account_id
+                        color = new_match.get("color")
+                        if color in self.NEW_MATCH_COLORS:
+                            state["color"] = color
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
+        return state
+
+    def _save_new_match_state(self, instance: Instance, state: dict[str, Optional[str]]) -> None:
+        """Persist new match selection state."""
+        payload = {
+            "new_match": {
+                "account_id": state.get("account_id"),
+                "color": state.get("color"),
+            }
+        }
+        instance.move_state = json.dumps(payload)
+        self.db.commit()
 
     def _handle_play_input(
         self,
@@ -364,7 +453,7 @@ class InputProcessorService:
     ) -> dict[ButtonType, tuple[str, bool]]:
         """
         Get valid buttons for the current state.
-        
+
         Returns:
             Dict mapping button to (label, enabled) tuple
         """
