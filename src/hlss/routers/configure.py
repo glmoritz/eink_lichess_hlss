@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 
 from hlss.config import get_settings
 from hlss.database import get_db
-from hlss.models import Instance, LichessAccount, ScreenType
+from hlss.models import Adversary, Instance, LichessAccount, ScreenType
+from hlss.schemas import AdversaryResponse, AdversaryUpdate
 from hlss.services.lichess import LichessService
 
 router = APIRouter(prefix="/configure", tags=["configuration"])
@@ -271,6 +272,7 @@ def process_configuration(
     instance.current_screen = ScreenType.NEW_MATCH
 
     db.commit()
+    _sync_account_adversaries(db, account)
 
     # Show success page
     content = f"""
@@ -315,3 +317,78 @@ def get_configuration_status(instance_id: str, db: DbSession) -> dict:
         "linked_account": account.username if account else None,
         "current_screen": instance.current_screen.value if instance.current_screen else None,
     }
+
+
+@router.get(
+    "/accounts/{account_id}/adversaries",
+    response_model=list[AdversaryResponse],
+    tags=["configuration"],
+)
+def list_adversaries(account_id: str, db: DbSession) -> list[AdversaryResponse]:
+    """List configured adversaries for a given Lichess account."""
+    account = db.get(LichessAccount, account_id)
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found",
+        )
+    return account.adversaries
+
+
+@router.patch("/adversaries/{adversary_id}", response_model=AdversaryResponse)
+def update_adversary(
+    adversary_id: str,
+    data: AdversaryUpdate,
+    db: DbSession,
+) -> AdversaryResponse:
+    """Update the friendly name for an adversary."""
+    adversary = db.get(Adversary, adversary_id)
+    if not adversary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Adversary not found",
+        )
+    adversary.friendly_name = data.friendly_name
+    db.commit()
+    db.refresh(adversary)
+    return adversary
+
+
+def _sync_account_adversaries(db: Session, account: LichessAccount) -> None:
+    """Fetch current friends from Lichess and sync them as adversaries."""
+    if not account.api_token:
+        return
+
+    try:
+        lichess_service = LichessService(account.api_token)
+        friends = lichess_service.get_friends()
+    except Exception:
+        return
+
+    existing = {adv.lichess_username: adv for adv in account.adversaries}
+    tracked_usernames: set[str] = set()
+
+    for friend in friends:
+        username = friend.get("username") or friend.get("id")
+        if not username:
+            continue
+        friendly_name = friend.get("name") or username
+        tracked_usernames.add(username)
+
+        if username in existing:
+            adv = existing[username]
+            if adv.friendly_name != friendly_name:
+                adv.friendly_name = friendly_name
+        else:
+            adv = Adversary(
+                account_id=account.id,
+                lichess_username=username,
+                friendly_name=friendly_name,
+            )
+            db.add(adv)
+
+    for username, adversary in existing.items():
+        if username not in tracked_usernames:
+            db.delete(adversary)
+
+    db.commit()

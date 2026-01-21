@@ -301,7 +301,8 @@ class RendererService:
 
     def render_new_match_screen(
         self,
-        selected_user: str,
+        username: str,
+        selected_adversary: str,
         selected_color: str,
         button_actions: list[ButtonAction],
     ) -> bytes:
@@ -316,10 +317,12 @@ class RendererService:
         Returns:
             PNG image data
         """
+        names_pt_br = {"white": "Brancas", "black": "Pretas", "random": "Sorteio"}
+
         replacements = {
-            "@@ADVERSARY@@": selected_user,
-            "@@PLAYERNAME@@": "Player",
-            "@@PLAYERCOLOR@@": selected_color.capitalize(),
+            "@@ADVERSARY@@": selected_adversary,
+            "@@PLAYERNAME@@": username,
+            "@@PLAYERCOLOR@@": names_pt_br[selected_color.lower()],
         }
         return render_html_file_to_png(
             "/app/new_match_screen.html",

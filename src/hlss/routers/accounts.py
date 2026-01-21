@@ -44,9 +44,7 @@ def get_account(account_id: str, db: DbSession) -> LichessAccount:
 def create_account(data: LichessAccountCreate, db: DbSession) -> LichessAccount:
     """Create a new Lichess account configuration."""
     # Check if username already exists
-    existing = db.scalar(
-        select(LichessAccount).where(LichessAccount.username == data.username)
-    )
+    existing = db.scalar(select(LichessAccount).where(LichessAccount.username == data.username))
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -55,10 +53,7 @@ def create_account(data: LichessAccountCreate, db: DbSession) -> LichessAccount:
 
     # If this is the first account or marked as default, ensure only one default
     if data.is_default:
-        db.execute(
-            select(LichessAccount)
-            .where(LichessAccount.is_default == True)  # noqa: E712
-        )
+        db.execute(select(LichessAccount).where(LichessAccount.is_default == True))  # noqa: E712
         for acc in db.scalars(
             select(LichessAccount).where(LichessAccount.is_default == True)  # noqa: E712
         ).all():

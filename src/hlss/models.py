@@ -47,6 +47,11 @@ class LichessAccount(Base):
 
     # Relationships
     games: Mapped[list["Game"]] = relationship("Game", back_populates="account")
+    adversaries: Mapped[list["Adversary"]] = relationship(
+        "Adversary",
+        back_populates="account",
+        cascade="all, delete-orphan",
+    )
 
 
 class GameStatus(enum.Enum):
@@ -223,6 +228,7 @@ class Instance(Base):
 
     # Navigation state for move input
     move_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON blob
+    new_match_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Last frame tracking
     last_frame_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
@@ -236,3 +242,20 @@ class Instance(Base):
     linked_account: Mapped[Optional["LichessAccount"]] = relationship(
         "LichessAccount", foreign_keys=[linked_account_id]
     )
+
+
+class Adversary(Base):
+    """A Lichess friend/adversary associated with an account."""
+
+    __tablename__ = "adversaries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    account_id: Mapped[str] = mapped_column(String(36), ForeignKey("lichess.lichess_accounts.id"))
+    lichess_username: Mapped[str] = mapped_column(String(255), nullable=False)
+    friendly_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    account: Mapped["LichessAccount"] = relationship("LichessAccount", back_populates="adversaries")

@@ -3,20 +3,32 @@ Input processor service for handling device button events.
 """
 
 import json
+from datetime import datetime
 from typing import Optional
 
 import chess
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from hlss.models import ButtonType, Game, GameStatus, Instance, LichessAccount, ScreenType
+from hlss.models import (
+    Adversary,
+    ButtonType,
+    Game,
+    GameStatus,
+    Instance,
+    LichessAccount,
+    ScreenType,
+)
 from hlss.schemas import MoveState, MoveStateStep
+from hlss.services.new_match_state import (
+    NEW_MATCH_COLORS,
+    load_new_match_state,
+    serialize_new_match_state,
+)
 
 
 class InputProcessorService:
     """Service for processing input events and updating state."""
-
-    NEW_MATCH_COLORS = ["random", "white", "black"]
 
     # Piece selection mapping (BTN_1 through BTN_8)
     PIECE_BUTTONS = {
@@ -130,94 +142,113 @@ class InputProcessorService:
         button: ButtonType,
     ) -> tuple[bool, Optional[str]]:
         """Handle input on the new match screen."""
-        # BTN_1 - Cycle users
-        # BTN_2 - Cycle colors
-        # BTN_8 - Show QR code
-        # ENTER - Create match
-        # ESC - Cancel
-        state = self._load_new_match_state(instance)
+        # BTN_1 - Previous adversary
+        # BTN_3 - Previous color
+        # BTN_6 - Next color
+        # BTN_8 - Next adversary
+        # ENTER - Create match placeholder
+        state = load_new_match_state(instance)
 
         if button == ButtonType.BTN_1:
-            accounts = list(
-                self.db.scalars(
-                    select(LichessAccount)
-                    .where(LichessAccount.is_enabled == True)  # noqa: E712
-                    .order_by(LichessAccount.created_at.asc())
-                ).all()
-            )
-            if not accounts:
-                return False, "No enabled accounts"
-
-            current_idx = next(
-                (i for i, acc in enumerate(accounts) if acc.id == state["account_id"]),
-                -1,
-            )
-            next_account = accounts[(current_idx + 1) % len(accounts)]
-            instance.linked_account_id = next_account.id
-            state["account_id"] = next_account.id
-            self._save_new_match_state(instance, state)
-            return True, None
-
-        if button == ButtonType.BTN_2:
-            try:
-                idx = self.NEW_MATCH_COLORS.index(state["color"])
-            except ValueError:
-                idx = 0
-            state["color"] = self.NEW_MATCH_COLORS[(idx + 1) % len(self.NEW_MATCH_COLORS)]
-            self._save_new_match_state(instance, state)
-            return True, None
+            return self._cycle_adversary(instance, state, direction=-1)
 
         if button == ButtonType.BTN_8:
-            if not instance.configuration_url:
-                return False, "No configuration URL"
-            instance.current_screen = ScreenType.SETUP
-            self.db.commit()
-            return True, None
+            return self._cycle_adversary(instance, state, direction=1)
+
+        if button == ButtonType.BTN_3:
+            return self._cycle_color(instance, state, direction=-1)
+
+        if button == ButtonType.BTN_6:
+            return self._cycle_color(instance, state, direction=1)
 
         if button == ButtonType.ENTER:
-            if not state.get("account_id"):
-                return False, "No account selected"
-            # Game creation via Lichess is not yet implemented
-            return False, "Game creation not yet implemented"
+            return True, "Match creation not implemented yet"
 
         if button == ButtonType.ESC:
             return False, None
 
         return False, None
 
+    def _cycle_color(
+        self,
+        instance: Instance,
+        state: dict[str, Optional[str]],
+        direction: int,
+    ) -> tuple[bool, Optional[str]]:
+        """Cycle the selected color."""
+        try:
+            idx = NEW_MATCH_COLORS.index(state.get("color", NEW_MATCH_COLORS[0]))
+        except ValueError:
+            idx = 0
+        state["color"] = NEW_MATCH_COLORS[(idx + direction) % len(NEW_MATCH_COLORS)]
+        self._save_new_match_state(instance, state)
+        return True, None
+
+    def _cycle_adversary(
+        self,
+        instance: Instance,
+        state: dict[str, Optional[str]],
+        direction: int,
+    ) -> tuple[bool, Optional[str]]:
+        """Cycle through the configured adversaries for this account."""
+        if not instance.linked_account_id:
+            return False, "No account linked"
+
+        adversaries = self._get_adversaries_for_account(instance.linked_account_id)
+        if not adversaries:
+            return False, "No adversaries configured"
+
+        selected = self._select_adversary(adversaries, state.get("adversary_id"))
+        idx = adversaries.index(selected)
+        state["adversary_id"] = adversaries[(idx + direction) % len(adversaries)].id
+        self._save_new_match_state(instance, state)
+        return True, None
+
+    def _select_adversary(
+        self,
+        adversaries: list[Adversary],
+        selected_id: Optional[str],
+    ) -> Adversary:
+        """Return the matching adversary or fallback to the first in the list."""
+        if not adversaries:
+            raise ValueError("adversary list is empty")
+        selected = next((adv for adv in adversaries if adv.id == selected_id), None)
+        return selected or adversaries[0]
+
+    def _get_adversaries_for_account(self, account_id: str) -> list[Adversary]:
+        """Fetch the friends/adversaries for the given account."""
+        # If adversary list hasn't been synced in the last minute, refresh it.
+        latest_ts = self.db.scalar(
+            select(func.max(Adversary.updated_at)).where(Adversary.account_id == account_id)
+        )
+
+        # If there is no timestamp (no adversaries) or it's older than 60s, sync.
+        if not latest_ts or (datetime.utcnow() - latest_ts).total_seconds() > 60:
+            account = self.db.get(LichessAccount, account_id)
+            if account:
+                try:
+                    # Local import to avoid circular imports at module import time
+                    from hlss.routers.configure import _sync_account_adversaries
+
+                    _sync_account_adversaries(self.db, account)
+                except Exception:
+                    # Swallow sync errors and continue with whatever data we have
+                    pass
+
+        stmt = (
+            select(Adversary)
+            .where(Adversary.account_id == account_id)
+            .order_by(Adversary.friendly_name)
+        )
+        return list(self.db.scalars(stmt).all())
+
     def _load_new_match_state(self, instance: Instance) -> dict[str, Optional[str]]:
-        """Load new match selection state."""
-        state: dict[str, Optional[str]] = {
-            "account_id": instance.linked_account_id,
-            "color": "random",
-        }
-
-        if instance.move_state:
-            try:
-                data = json.loads(instance.move_state)
-                if isinstance(data, dict):
-                    new_match = data.get("new_match")
-                    if isinstance(new_match, dict):
-                        account_id = new_match.get("account_id")
-                        if account_id:
-                            state["account_id"] = account_id
-                        color = new_match.get("color")
-                        if color in self.NEW_MATCH_COLORS:
-                            state["color"] = color
-            except (json.JSONDecodeError, ValueError, TypeError):
-                pass
-
-        return state
+        """Load new match selection state from the instance."""
+        return load_new_match_state(instance)
 
     def _save_new_match_state(self, instance: Instance, state: dict[str, Optional[str]]) -> None:
         """Persist new match selection state."""
-        payload = {
-            "new_match": {
-                "account_id": state.get("account_id"),
-                "color": state.get("color"),
-            }
-        }
-        instance.move_state = json.dumps(payload)
+        instance.new_match_state = serialize_new_match_state(state)
         self.db.commit()
 
     def _handle_play_input(
@@ -463,9 +494,15 @@ class InputProcessorService:
             buttons[ButtonType.BTN_8] = ("Config", True)
 
         elif instance.current_screen == ScreenType.NEW_MATCH:
-            buttons[ButtonType.BTN_1] = ("User", True)
-            buttons[ButtonType.BTN_2] = ("Color", True)
-            buttons[ButtonType.BTN_8] = ("QR Code", True)
+            user_enabled = bool(
+                instance.linked_account_id
+                and self._get_adversaries_for_account(instance.linked_account_id)
+            )
+            color_enabled = True
+            buttons[ButtonType.BTN_1] = ("Prev Opp", user_enabled)
+            buttons[ButtonType.BTN_3] = ("Prev Color", color_enabled)
+            buttons[ButtonType.BTN_6] = ("Next Color", color_enabled)
+            buttons[ButtonType.BTN_8] = ("Next Opp", user_enabled)
             buttons[ButtonType.ENTER] = ("Create", True)
             buttons[ButtonType.ESC] = ("Cancel", True)
 

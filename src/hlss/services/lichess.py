@@ -38,10 +38,14 @@ class LichessService:
         """Get detailed information about a specific game."""
         return self.client.games.export(game_id)
 
+    def get_friends(self) -> list[dict[str, Any]]:
+        """Return the authenticated user\'s followed players (friends)."""
+        return list(self.client.relations.get_users_followed())
+
     def get_game_stream(self, game_id: str):
         """
         Stream game updates for real-time position tracking.
-        
+
         Returns an iterator that yields game state updates.
         """
         return self.client.board.stream_game_state(game_id)
@@ -49,11 +53,11 @@ class LichessService:
     def make_move(self, game_id: str, move: str) -> bool:
         """
         Make a move in an ongoing game.
-        
+
         Args:
             game_id: The Lichess game ID
             move: The move in UCI notation (e.g., 'e2e4')
-            
+
         Returns:
             True if the move was accepted
         """
@@ -73,14 +77,14 @@ class LichessService:
     ) -> dict[str, Any]:
         """
         Create a challenge (for correspondence or timed games).
-        
+
         Args:
             username: Opponent username (None for open challenge)
             rated: Whether the game should be rated
             clock_limit: Initial time in seconds (None for correspondence)
             clock_increment: Time increment in seconds
             color: 'white', 'black', or 'random'
-            
+
         Returns:
             Challenge information including game ID
         """
@@ -130,7 +134,7 @@ class LichessService:
     async def validate_token(token: str) -> Optional[dict[str, Any]]:
         """
         Validate an API token and return account info if valid.
-        
+
         This is an async method for validation during account setup.
         """
         async with httpx.AsyncClient() as client:

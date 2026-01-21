@@ -459,20 +459,29 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                 username = account.username
 
         selected_color = "random"
-        if instance.move_state:
+        selected_adversary = "Unknown"
+        if instance.new_match_state:
             try:
-                data = json.loads(instance.move_state)
+                data = json.loads(instance.new_match_state)
                 if isinstance(data, dict):
                     new_match = data.get("new_match")
                     if isinstance(new_match, dict):
                         color = new_match.get("color")
                         if color in ["random", "white", "black"]:
                             selected_color = color
+                        if adversary_id := new_match.get("adversary_id"):
+                            # Lookup adversary username
+                            from hlss.models import Adversary
+
+                            adversary = db.get(Adversary, adversary_id)
+                            if adversary:
+                                selected_adversary = adversary.lichess_username
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
         image_data = renderer.render_new_match_screen(
-            selected_user=username,
+            username=username,
+            selected_adversary=selected_adversary,
             selected_color=selected_color,
             button_actions=[],
         )

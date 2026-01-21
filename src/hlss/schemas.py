@@ -273,6 +273,25 @@ class ScreenState(BaseModel):
     move_state: Optional[MoveState] = None
 
 
+class AdversaryResponse(BaseModel):
+    """Response schema for an adversary (Lichess friend)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    account_id: str
+    lichess_username: str
+    friendly_name: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdversaryUpdate(BaseModel):
+    """Update schema for editing an adversary friendly name."""
+
+    friendly_name: str = Field(..., min_length=1, max_length=255)
+
+
 # ============================================================================
 # Health Check Schemas
 # ============================================================================

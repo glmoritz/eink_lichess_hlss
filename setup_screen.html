@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<title>Configuração – eInk</title>
+
+<style>
+:root {
+  --white: #ffffff;
+  --light-gray: #d5d5d5;
+  --dark-gray: #555555;
+  --black: #000000;
+}
+
+body {
+  background: #999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+  font-family: "Inter", "DejaVu Sans", sans-serif;
+}
+
+.screen {
+  width: 800px;
+  height: 480px;
+  background: var(--white);
+  border: 4px solid var(--dark-gray);
+  box-sizing: border-box;
+  position: relative;
+}
+
+/* ─────────── TOP BAR ─────────── */
+
+.top-bar {
+  height: 56px;
+  background: var(--light-gray);
+  border-bottom: 2px solid var(--dark-gray);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+
+.hl {
+  width: 140px;
+  font-size: 16px;
+}
+
+.hl span {
+  margin-right: 10px;
+}
+
+.title {
+  flex: 1;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.top-actions {
+  width: 180px;
+  text-align: right;
+}
+
+.action-btn {
+  display: inline-block;
+  padding: 6px 14px;
+  margin-left: 8px;
+  background: var(--dark-gray);
+  color: var(--white);
+  border-radius: 8px;
+  font-size: 16px;
+}
+
+/* ─────────── CONTENT ─────────── */
+
+.content {
+  position: absolute;
+  top: 56px;
+  bottom: 112px;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.config-card {
+  width: 640px;
+  border: 2px solid var(--dark-gray);
+  border-radius: 20px;
+  padding: 24px;
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  column-gap: 24px;
+  box-sizing: border-box;
+}
+
+.config-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.config-text .headline {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.config-text .url {
+  font-size: 18px;
+  font-weight: 600;
+  word-break: break-all;
+  border: 2px dashed var(--dark-gray);
+  padding: 12px;
+  border-radius: 12px;
+}
+
+.qr {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.qr img {
+  width: 200px;
+  height: 200px;
+  image-rendering: crisp-edges;
+  border: 2px solid var(--dark-gray);
+  background: var(--white);
+}
+
+/* ─────────── HELPER ─────────── */
+
+.helper {
+  position: absolute;
+  bottom: 118px;
+  width: 100%;
+  text-align: center;
+  font-size: 14px;
+  color: var(--dark-gray);
+}
+
+/* ─────────── BOTTOM BAR ─────────── */
+
+.bottom-bar {
+  position: absolute;
+  bottom: 0;
+  height: 50px;
+  width: 100%;
+  background: var(--light-gray);
+  border-top: 2px solid var(--dark-gray);
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.soft-btn {
+  border-left: 1px solid var(--dark-gray);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 14px;
+  color: var(--dark-gray);
+}
+</style>
+</head>
+
+<body>
+
+<div class="screen">
+
+  <!-- TOP BAR -->
+  <div class="top-bar">
+    <div class="hl">
+      <span>◀</span><span>▶</span>
+    </div>
+    <div class="title">Configuração</div>
+    <div class="top-actions">
+      <span class="action-btn">ESC</span>
+    </div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="content">
+    <div class="config-card">
+
+      <div class="config-text">
+        <div class="headline">
+          Para configurar o jogo, acesse:
+        </div>
+        <div class="url">
+          https://eink.tutu.eng.br/setup/fac_8923742/
+        </div>
+      </div>
+
+      <div class="qr">
+        <img
+          src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://eink.tutu.eng.br/setup/fac_8923742/"
+          alt="QR Code de Configuração"
+        />
+      </div>
+
+    </div>
+  </div>
+
+  <div class="helper">
+    Use um celular ou computador para concluir a configuração
+  </div>
+
+  <!-- BOTTOM BAR -->
+  <div class="bottom-bar">
+    <div class="soft-btn"></div>
+    <div class="soft-btn"></div>
+    <div class="soft-btn"></div>
+    <div class="soft-btn"></div>
+    <div class="soft-btn"></div>
+    <div class="soft-btn"></div>
+    <div class="soft-btn"></div>
+    <div class="soft-btn">ESC Voltar</div>
+  </div>
+
+</div>
+
+</body>
+</html>
