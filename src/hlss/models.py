@@ -44,6 +44,7 @@ class LichessAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+    last_games_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Relationships
     games: Mapped[list["Game"]] = relationship("Game", back_populates="account")
@@ -98,6 +99,10 @@ class Game(Base):
     fen: Mapped[str] = mapped_column(
         String(100), default="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     )
+    # Initial FEN for the stored move sequence (if provided by Lichess)
+    initial_fen: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # Raw JSON payload returned by Lichess for debugging/inspection
+    raw_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_move: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     moves: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Space-separated UCI moves
 

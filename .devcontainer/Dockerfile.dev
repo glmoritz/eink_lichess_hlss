@@ -16,10 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng-dev \
     libfreetype6-dev \
     fonts-dejavu-core \
-    git \
-    curl \
-    sudo \
     iputils-ping \
+    wget \    
+    libcairo2 \ 
+    libffi-dev \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with sudo access

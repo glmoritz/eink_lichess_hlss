@@ -7,13 +7,14 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+import cairosvg
 import chess
 import chess.svg
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 
 from hlss.config import get_settings
-from hlss.schemas import ButtonAction, MoveState, ScreenType
+from hlss.schemas import ButtonAction, MoveState, MoveStateStep, ScreenType
 from hlss.services.html_renderer import render_html_file_to_png
 
 
@@ -304,7 +305,7 @@ class RendererService:
         username: str,
         selected_adversary: str,
         selected_color: str,
-        button_actions: list[ButtonAction],
+        button_actions: list[str],
     ) -> bytes:
         """
         Render the new match creation screen.
@@ -323,6 +324,17 @@ class RendererService:
             "@@ADVERSARY@@": selected_adversary,
             "@@PLAYERNAME@@": username,
             "@@PLAYERCOLOR@@": names_pt_br[selected_color.lower()],
+            "@@HELPER_TEXT@@": "Use ◀ ▶ para selecionar • ENTER para criar o jogo",
+            "@@B1@@": button_actions[0] if len(button_actions) > 0 else " ",
+            "@@B2@@": button_actions[1] if len(button_actions) > 1 else " ",
+            "@@B3@@": button_actions[2] if len(button_actions) > 2 else " ",
+            "@@B4@@": button_actions[3] if len(button_actions) > 3 else " ",
+            "@@B5@@": button_actions[5] if len(button_actions) > 4 else " ",
+            "@@B6@@": button_actions[6] if len(button_actions) > 5 else " ",
+            "@@B7@@": button_actions[7] if len(button_actions) > 6 else " ",
+            "@@B8@@": button_actions[8] if len(button_actions) > 8 else " ",
+            "@@B9@@": button_actions[9] if len(button_actions) > 9 else " ",
+            "@@B10@@": button_actions[10] if len(button_actions) > 10 else " ",
         }
         return render_html_file_to_png(
             "/app/new_match_screen.html",
@@ -337,10 +349,8 @@ class RendererService:
         player_color: chess.Color,
         opponent_name: str,
         player_name: str,
-        move_state: Optional[MoveState],
-        button_actions: list[ButtonAction],
-        last_move: Optional[chess.Move] = None,
-        pending_move: Optional[chess.Move] = None,
+        move_state: MoveState,
+        pending_move: Optional[str] = None,
     ) -> bytes:
         """
         Render the game play screen.
@@ -358,76 +368,244 @@ class RendererService:
         Returns:
             PNG image data
         """
-        img = self._create_base_image()
-        draw = ImageDraw.Draw(img)
+        # Render the static HTML base first, then overlay the SVG board.
+        # Prepare simple replacements for the HTML template.
 
-        self._render_header(draw, "Play")
-        self._render_context_bar(draw, button_actions)
-        left, top, right, bottom = self._content_bounds()
+        # SELECT_PIECE = "select_piece"
+        #     SELECT_FILE = "select_file"
+        #     SELECT_RANK = "select_rank"
+        #     DISAMBIGUATION = "disambiguation"
+        #     CONFIRM = "confirm"
 
-        # Calculate board dimensions (left side of screen)
-        content_height = bottom - top
-        content_width = right - left
-        board_size = min(content_height, content_width // 2 - 20)
-        board_x = left
-        board_y = top + (content_height - board_size) // 2
+        replacements = {
+            "@@TITLE@@": "Play",
+            "@@ADVERSARY@@": opponent_name,
+            "@@ADVERSARY_CAPTURED@@": "",
+            "@@USER@@": player_name,
+            "@@USER_CAPTURED@@": "",
+            "@@MOVE_PREVIEW@@": move_preview,
+        }
 
-        # Render chess board
-        self._render_board(
-            draw,
-            board,
-            board_x,
-            board_y,
-            board_size,
-            player_color,
-            last_move,
-            pending_move,
+        # calcula o número de peças capturadas
+        initial = {chess.PAWN: 8, chess.KNIGHT: 2, chess.BISHOP: 2, chess.ROOK: 2, chess.QUEEN: 1}
+
+        values = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+
+        # Helper to build captured pieces string
+        def build_captured_str(captured_dict, color):
+            symbols = []
+            for piece_type in captured_dict.keys():
+                count = captured_dict[piece_type]
+                if count > 0:
+                    symbol = self.PIECE_SYMBOLS[chess.Piece(piece_type, color).symbol()]
+                    if piece_type == chess.PAWN and count > 2:
+                        symbols.append(f"{count}{symbol}")
+                    else:
+                        symbols.extend([symbol] * count)
+            return " ".join(symbols)
+
+        captured = {chess.PAWN: 0, chess.KNIGHT: 0, chess.BISHOP: 0, chess.ROOK: 0, chess.QUEEN: 0}
+        captured_count = {}
+        captured_count[chess.WHITE] = captured.copy()
+        captured_count[chess.BLACK] = captured.copy()
+
+        for piece_color in [chess.WHITE, chess.BLACK]:
+            for piece_type, count in initial.items():
+                captured_count[piece_color][piece_type] = count - len(
+                    board.pieces(piece_type, piece_color)
+                )
+
+        user_captured_str = build_captured_str(captured_count[player_color], player_color)
+        adversary_color = not player_color
+        adversary_captured_str = build_captured_str(
+            captured_count[adversary_color], adversary_color
         )
 
-        # Right panel starts after the board
-        panel_x = board_x + board_size + 20
+        # Calculate advantage
+        user_adv = sum(captured_count[player_color][pt] * values[pt] for pt in values)
+        adversary_adv = sum(captured_count[adversary_color][pt] * values[pt] for pt in values)
+        advantage = user_adv - adversary_adv
+        if advantage > 0:
+            user_captured_str += f" (+{advantage})"
+        elif advantage < 0:
+            adversary_captured_str += f" (+{abs(advantage)})"
 
-        # Player names
-        y = top
-        # Opponent at top (or bottom depending on color)
-        draw.text((panel_x, y), f"⚫ {opponent_name}", fill=self.BLACK, font=self._font)
-        y += 25
+        replacements["@@USER_CAPTURED@@"] = user_captured_str
+        replacements["@@ADVERSARY_CAPTURED@@"] = adversary_captured_str
 
-        # Game info
-        if board.turn == player_color:
-            draw.text((panel_x, y), "Your turn", fill=self.BLACK, font=self._font)
-        else:
-            draw.text((panel_x, y), "Waiting...", fill=self.GRAY, font=self._font)
-        y += 40
+        # Prepare last 8 moves for the move list
+        move_stack = list(board.move_stack)
+        num_moves = board.fullmove_number
 
-        # Move list (last 10 moves)
-        moves = list(board.move_stack)[-10:]
-        if moves:
-            draw.text((panel_x, y), "Recent moves:", fill=self.BLACK, font=self._font_small)
-            y += 20
-            temp_board = board.copy()
-            for _ in range(len(moves)):
-                temp_board.pop()
-            for i, move in enumerate(moves[-10:]):
-                san = temp_board.san(move)
-                temp_board.push(move)
-                draw.text(
-                    (panel_x, y),
-                    f"{len(temp_board.move_stack)}. {san}",
-                    fill=self.BLACK,
-                    font=self._font_small,
-                )
-                y += 16
+        # Helper to replace piece letter with unicode symbol
+        def san_with_unicode(san: str) -> str:
+            for piece, symbol in self.PIECE_SYMBOLS.items():
+                san = san.replace(piece.upper(), symbol).replace(piece.lower(), symbol)
+            return san
 
-        # Player at bottom
-        y = bottom - 24
-        draw.text((panel_x, y), f"⚪ {player_name}", fill=self.BLACK, font=self._font)
+        for i in range(8):
+            move_index = num_moves - 8 + i
+            n_key = f"@@N{i+1}@@"
+            wp_key = f"@@WP{i+1}@@"
+            bp_key = f"@@BP{i+1}@@"
+            ply_num = (move_index // 2) + 1 if move_index >= 0 else ""
+            w_move = ""
+            b_move = ""
+            if move_index >= 0:
+                if move_index % 2 == 0:
+                    # White move
+                    try:
+                        w_move = san_with_unicode(board.san(move_stack[move_index]))
+                    except Exception:
+                        w_move = str(move_stack[move_index])
+                    # Black move may exist
+                    if move_index + 1 < num_moves:
+                        try:
+                            b_move = san_with_unicode(board.san(move_stack[move_index + 1]))
+                        except Exception:
+                            b_move = str(move_stack[move_index + 1])
+                else:
+                    # Odd index: black move, white move is empty
+                    try:
+                        b_move = san_with_unicode(board.san(move_stack[move_index]))
+                    except Exception:
+                        b_move = str(move_stack[move_index])
+            replacements[n_key] = str(ply_num)
+            replacements[wp_key] = w_move
+            replacements[bp_key] = b_move
 
-        # Move state indicator
-        if move_state:
-            self._render_move_state(draw, move_state, panel_x, bottom - 80)
+        button_labels = [" ", " ", " ", " ", " ", " ", " ", " ", " ", " "]
 
-        return self._image_to_bytes(img)
+        if move_state.step == MoveStateStep.SELECT_PIECE:
+            button_labels[8] = "Empatar"
+            button_labels[9] = "Abandonar"
+            # Title shows who is to move
+            is_player_turn = board.turn == player_color
+            replacements["@@TITLE@@"] = (
+                f"{player_name} a jogar" if is_player_turn else f"{opponent_name} a jogar"
+            )
+            replacements["@@HELPER_TEXT@@"] = "Selecione a peça para mover"
+            replacements["@@MOVE_PREVIEW@@"] = "____   ____   ____"
+
+        try:
+            base_png = render_html_file_to_png(
+                "/app/match_screen.html",
+                width=self.width,
+                height=self.height,
+                replacements=replacements,
+            )
+        except Exception:
+            return None
+
+        # Open base image from HTML renderer
+        base_img = Image.open(BytesIO(base_png)).convert("RGBA")
+
+        # Compute board placement to match the HTML layout.
+        # HTML uses left column 400px, board width/height 320px and centered inside that column.
+        board_size = 320
+        board_x = 42  # (400 - 320) / 2
+        board_y = 61
+
+        # Render the chess board to SVG and convert to PNG via cairosvg
+        try:
+
+            svg = chess.svg.board(
+                board=board,
+                size=board_size,
+                lastmove=last_move,
+                orientation=(chess.WHITE if player_color == chess.WHITE else chess.BLACK),
+            )
+            board_png = cairosvg.svg2png(bytestring=svg.encode("utf-8"))
+            board_img = Image.open(BytesIO(board_png)).convert("RGBA")
+            # Paste board onto base image
+            base_img.paste(board_img, (board_x, board_y), board_img)
+        except Exception:
+            pass
+
+        if move_state.step == MoveStateStep.SELECT_PIECE:
+            # Board and move state context
+            button_height = self.FOOTER_HEIGHT
+            button_width = self.width // 8
+            bar_top = self.height - button_height
+            bar_center_y = bar_top + button_height // 2
+
+            # Map button index to piece type for standard moves
+            piece_buttons = [
+                chess.PAWN,
+                chess.KNIGHT,
+                chess.BISHOP,
+                chess.ROOK,
+                chess.QUEEN,
+                chess.KING,
+            ]
+
+            # Find all legal moves for the player
+            legal_moves = list(board.legal_moves)
+            from_square = move_state.selected_square
+            piece_moves = {pt: False for pt in piece_buttons}
+            castle_kingside = False
+            castle_queenside = False
+
+            for move in legal_moves:
+                if from_square is not None and move.from_square == from_square:
+                    piece = board.piece_at(move.from_square)
+                    if piece:
+                        if piece.piece_type in piece_moves:
+                            piece_moves[piece.piece_type] = True
+                    if board.is_kingside_castling(move):
+                        castle_kingside = True
+                    if board.is_queenside_castling(move):
+                        castle_queenside = True
+
+            # Render SVG pieces for each button if there is a valid move
+            for i in range(8):
+                btn_x = i * button_width
+                center_x = btn_x + button_width // 2
+                if i < 6:
+                    piece_type = piece_buttons[i]
+                    if piece_moves[piece_type]:
+                        # Render SVG for this piece
+                        piece = chess.Piece(piece_type, player_color)
+                        svg = chess.svg.piece(piece, size=32)
+                        png_bytes = cairosvg.svg2png(
+                            bytestring=svg.encode("utf-8"), output_width=32, output_height=32
+                        )
+                        piece_img = Image.open(BytesIO(png_bytes)).convert("RGBA")
+                        img_x = center_x - piece_img.width // 2
+                        img_y = bar_center_y - piece_img.height // 2
+                        base_img.paste(piece_img, (img_x, img_y), piece_img)
+                elif i == 6 and castle_kingside:
+                    # Draw O-O for kingside castle
+                    text = "O-O"
+                    draw = ImageDraw.Draw(base_img)
+                    w, h = draw.textsize(text, font=self._font_large)
+                    draw.text(
+                        (center_x - w // 2, bar_center_y - h // 2),
+                        text,
+                        fill=self.BLACK,
+                        font=self._font_large,
+                    )
+                elif i == 7 and castle_queenside:
+                    # Draw O-O-O for queenside castle
+                    text = "O-O-O"
+                    draw = ImageDraw.Draw(base_img)
+                    w, h = draw.textsize(text, font=self._font_large)
+                    draw.text(
+                        (center_x - w // 2, bar_center_y - h // 2),
+                        text,
+                        fill=self.BLACK,
+                        font=self._font_large,
+                    )
+
+        # Compute button centers on a transparent layer (so we don't redraw buttons over the HTML)
+        temp_img = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+        temp_draw = ImageDraw.Draw(temp_img)
+        centers = self._render_context_bar(temp_draw, button_actions)
+
+        # Return final PNG bytes
+        # Convert back to RGB for consistency with other renderers
+        final_img = base_img.convert("RGB")
+        return self._image_to_bytes(final_img)
 
     def _render_board(
         self,

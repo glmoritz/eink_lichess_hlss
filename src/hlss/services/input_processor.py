@@ -4,7 +4,7 @@ Input processor service for handling device button events.
 
 import json
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 import chess
 from sqlalchemy import func, select
@@ -14,12 +14,14 @@ from hlss.models import (
     Adversary,
     ButtonType,
     Game,
+    GameColor,
     GameStatus,
     Instance,
     LichessAccount,
     ScreenType,
 )
 from hlss.schemas import MoveState, MoveStateStep
+from hlss.services.lichess import LichessService
 from hlss.services.new_match_state import (
     NEW_MATCH_COLORS,
     load_new_match_state,
@@ -104,26 +106,68 @@ class InputProcessorService:
         """Navigate between screens."""
         screens = [ScreenType.NEW_MATCH, ScreenType.PLAY]
 
-        # Get games for this instance to determine available play screens
-        games = (
-            self.db.query(Game)
-            .filter(Game.status.in_([GameStatus.CREATED, GameStatus.STARTED]))
-            .all()
-        )
-
         if instance.current_screen == ScreenType.SETUP:
             # Can't navigate from setup until configured
             if instance.needs_configuration:
                 return False, "Configure an account first"
 
+        # Build navigation targets: start with NEW_MATCH, then one entry per active game
+        targets: list[str] = ["new_match"]
+
+        # Sync active games if not synced in the last 30 seconds
+        if instance.linked_account_id:
+            account = self.db.get(LichessAccount, instance.linked_account_id)
+            if account:
+                now = datetime.utcnow()
+                last = getattr(account, "last_games_sync_at", None)
+                if not last or (now - last).total_seconds() > 30:
+                    try:
+                        self.sync_active_games_for_account(account.id)
+                        account.last_games_sync_at = now
+                        self.db.commit()
+                    except Exception:
+                        # Don't block navigation on sync failures
+                        pass
+
+        # Get current active games for this account
+        games = (
+            self.db.query(Game)
+            .filter(Game.account_id == instance.linked_account_id)
+            .filter(Game.status.in_([GameStatus.CREATED, GameStatus.STARTED]))
+            .order_by(Game.created_at)
+            .all()
+        )
+
+        for g in games:
+            targets.append(g.id)
+
+        # Determine current position in targets
+        if instance.current_screen == ScreenType.NEW_MATCH:
+            current_key = "new_match"
+        elif instance.current_screen == ScreenType.PLAY and instance.current_game_id:
+            current_key = instance.current_game_id
+            if current_key not in targets:
+                current_key = "new_match"
+        else:
+            current_key = "new_match"
+
         try:
-            current_idx = screens.index(instance.current_screen)
-            new_idx = (current_idx + direction) % len(screens)
-            instance.current_screen = screens[new_idx]
-            self.db.commit()
-            return True, None
+            idx = targets.index(current_key)
         except ValueError:
-            return False, None
+            idx = 0
+
+        new_idx = (idx + direction) % len(targets)
+        new_key = targets[new_idx]
+
+        if new_key == "new_match":
+            instance.current_screen = ScreenType.NEW_MATCH
+            instance.current_game_id = None
+        else:
+            instance.current_screen = ScreenType.PLAY
+            instance.current_game_id = new_key
+
+        self.db.commit()
+        return True, None
 
     def _handle_setup_input(
         self,
@@ -162,12 +206,265 @@ class InputProcessorService:
             return self._cycle_color(instance, state, direction=1)
 
         if button == ButtonType.ENTER:
-            return True, "Match creation not implemented yet"
+            return self._create_new_match(instance, state)
 
         if button == ButtonType.ESC:
             return False, None
 
         return False, None
+
+    def _create_new_match(
+        self,
+        instance: Instance,
+        state: dict[str, Optional[str]],
+    ) -> tuple[bool, Optional[str]]:
+        """Create a new challenge on Lichess using the configured account."""
+        if not instance.linked_account_id:
+            return False, "No account linked"
+
+        account = self.db.get(LichessAccount, instance.linked_account_id)
+        if not account or not account.api_token:
+            return False, "Account not configured"
+
+        adversary_id = state.get("adversary_id")
+        if not adversary_id:
+            return False, "No adversary selected"
+
+        adversary = self.db.get(Adversary, adversary_id)
+        if not adversary:
+            return False, "Adversary not found"
+
+        color = state.get("color") or NEW_MATCH_COLORS[0]
+        if color not in NEW_MATCH_COLORS:
+            color = NEW_MATCH_COLORS[0]
+
+        lichess = LichessService(account.api_token)
+        try:
+            challenge = lichess.create_challenge(
+                username=adversary.lichess_username,
+                color=color,
+            )
+        except Exception as exc:
+            err = str(exc)
+            return False, f"Failed to create challenge: {err[:80]}"
+
+        friendly_name = adversary.friendly_name or adversary.lichess_username
+        challenge_id: Optional[str] = None
+        if isinstance(challenge, dict):
+            challenge_obj = challenge.get("challenge") or challenge
+            if isinstance(challenge_obj, dict):
+                challenge_id = challenge_obj.get("id")
+
+        message = f"Challenge sent to {friendly_name}"
+        if challenge_id:
+            message = f"Challenge {challenge_id} sent to {friendly_name}"
+
+        return True, message
+
+    def sync_active_games_for_account(self, account_id: str) -> int:
+        """Fetch ongoing Lichess games for the account and persist them."""
+        account = self.db.get(LichessAccount, account_id)
+        if not account or not account.api_token:
+            return 0
+
+        lichess = LichessService(account.api_token)
+        ongoing = lichess.get_ongoing_games()
+        sync_count = 0
+
+        for game_data in ongoing:
+            lichess_id = game_data.get("fullId")
+            if not lichess_id:
+                continue
+
+            stmt = select(Game).where(Game.lichess_game_id == lichess_id)
+            existing_game = self.db.scalar(stmt)
+
+            player_color = self._determine_player_color(account.username, game_data)
+            opponent_username = self._determine_opponent_username(account.username, game_data)
+            status = self._map_game_status(game_data.get("status"))
+            is_my_turn = bool(game_data.get("isMyTurn"))
+            # Prefer the realtime stream to get the latest moves/fen
+            fen = game_data.get("fen", "")
+            last_move = game_data.get("lastMove")
+            moves = game_data.get("moves")
+
+            incoming_initial_fen = None
+            try:
+                stream = lichess.get_game_stream(lichess_id)
+                # The stream yields the current game state as the first item
+                try:
+                    state = next(stream)
+                except StopIteration:
+                    state = None
+                if isinstance(state, dict):
+                    # common keys may be at top-level or under 'state'
+                    moves = state["state"]["moves"]
+                    incoming_initial_fen = state.get("initialFen")
+                    # lastMove may be provided; otherwise derive from moves
+                    if not last_move and moves:
+                        parts = moves.split()
+                        last_move = parts[-1] if parts else ""
+            except Exception:
+                # If stream fails, fall back to provided game_data
+                pass
+
+            if existing_game:
+                existing_game.account_id = account.id
+                existing_game.player_color = player_color
+                existing_game.opponent_username = opponent_username or "Unknown"
+                existing_game.status = status
+                existing_game.is_my_turn = is_my_turn
+                existing_game.fen = fen
+                existing_game.last_move = last_move
+
+                # Merge moves / initial fen intelligently. If the incoming moves overlap
+                # with the stored moves, keep the stored initial_fen and merge the moves.
+                # Otherwise, adopt the incoming initial_fen and moves.
+                try:
+                    if incoming_initial_fen:
+                        new_initial, new_moves = self._merge_moves_and_initial_fen(
+                            existing_game.initial_fen,
+                            existing_game.moves or "",
+                            incoming_initial_fen,
+                            moves or "",
+                        )
+                    else:
+                        new_initial = fen
+                        new_moves = moves
+                except Exception:
+                    # On any failure, fall back to replacing with incoming values
+                    new_initial, new_moves = incoming_initial_fen, moves
+
+                # Only update initial_fen if _merge_ decided to change it
+                existing_game.initial_fen = new_initial
+                existing_game.moves = new_moves
+                # Save full raw JSON for inspection
+                try:
+                    existing_game.raw_json = json.dumps(game_data)
+                except Exception:
+                    existing_game.raw_json = None
+            else:
+                new_game = Game(
+                    lichess_game_id=lichess_id,
+                    account_id=account.id,
+                    player_color=player_color,
+                    opponent_username=opponent_username,
+                    status=status,
+                    is_my_turn=is_my_turn,
+                    fen=fen,
+                    initial_fen=(
+                        incoming_initial_fen
+                        if incoming_initial_fen != "startpos"
+                        else "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+                    ),
+                    last_move=last_move,
+                    moves=moves,
+                    raw_json=(json.dumps(game_data) if isinstance(game_data, dict) else None),
+                )
+                self.db.add(new_game)
+
+            sync_count += 1
+
+        if ongoing:
+            self.db.commit()
+
+        return sync_count
+
+    def _determine_player_color(self, username: str, game_data: dict[str, Any]) -> GameColor:
+        if game_data["color"].lower() == "white":
+            return GameColor.WHITE
+        elif game_data["color"].lower() == "black":
+            return GameColor.BLACK
+        return GameColor.WHITE
+
+    def _determine_opponent_username(self, username: str, game_data: dict[str, Any]) -> str | None:
+        return game_data["opponent"]["id"] or game_data["opponent"]["username"]
+
+    def _map_game_status(self, status_value: Optional[str]) -> GameStatus:
+        mapping = {
+            "created": GameStatus.CREATED,
+            "started": GameStatus.STARTED,
+            "aborted": GameStatus.ABORTED,
+            "mate": GameStatus.MATE,
+            "resign": GameStatus.RESIGN,
+            "stalemate": GameStatus.STALEMATE,
+            "timeout": GameStatus.TIMEOUT,
+            "draw": GameStatus.DRAW,
+            "outoftime": GameStatus.OUT_OF_TIME,
+            "cheat": GameStatus.CHEAT,
+            "noStart": GameStatus.NO_START,
+            "variantEnd": GameStatus.VARIANT_END,
+            "unknownFinish": GameStatus.UNKNOWN_FINISH,
+        }
+        if not status_value:
+            return GameStatus.UNKNOWN_FINISH
+        return mapping.get(status_value["name"].lower(), GameStatus.UNKNOWN_FINISH)
+
+    def _merge_moves_and_initial_fen(
+        self,
+        existing_initial_fen: Optional[str],
+        existing_moves: str,
+        incoming_initial_fen: Optional[str],
+        incoming_moves: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Merge existing and incoming moves, deciding whether to keep initial_fen.
+
+        If incoming moves overlap with the tail of existing moves we keep the
+        existing_initial_fen and merge the sequences. Otherwise we adopt the
+        incoming initial fen and move list.
+        """
+        # Normalize to lists
+        existing_list = (existing_moves or "").split()
+        incoming_list = (incoming_moves or "").split()
+
+        if not incoming_list:
+            return existing_initial_fen, existing_moves
+
+        if not existing_list:
+            return incoming_initial_fen, incoming_moves
+
+        # Fast overlap check using list equality on suffix/prefix
+        max_overlap = min(len(existing_list), len(incoming_list))
+        for overlap in range(max_overlap, 0, -1):
+            if existing_list[-overlap:] == incoming_list[:overlap]:
+                merged = existing_list + incoming_list[overlap:]
+                return existing_initial_fen, " ".join(merged)
+
+        # No simple overlap found. As a secondary check, try to use chess to
+        # verify whether applying incoming moves from its initial_fen leads to
+        # a position that appears inside the existing move sequence. This is
+        # more expensive and may fail for malformed data; if it fails, fall
+        # back to replacing with incoming values.
+        try:
+            # Build board for incoming moves
+            b_in = chess.Board(incoming_initial_fen) if incoming_initial_fen else chess.Board()
+            for m in incoming_list:
+                try:
+                    b_in.push_uci(m)
+                except Exception:
+                    # If a move cannot be applied as UCI, abort this strategy
+                    raise
+
+            # Build board for existing moves
+            b_ex = chess.Board(existing_initial_fen) if existing_initial_fen else chess.Board()
+            for m in existing_list:
+                try:
+                    b_ex.push_uci(m)
+                except Exception:
+                    raise
+
+            # If the final FENs match, we can merge by picking the longer sequence
+            if b_in.fen() == b_ex.fen():
+                # Pick the longer move list
+                if len(existing_list) >= len(incoming_list):
+                    return existing_initial_fen, existing_moves
+                else:
+                    return incoming_initial_fen, incoming_moves
+        except Exception:
+            # Fall back: replace with incoming if no overlap detected
+            pass
+
+        return incoming_initial_fen, incoming_moves
 
     def _cycle_color(
         self,

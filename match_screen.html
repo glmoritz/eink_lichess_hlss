@@ -94,9 +94,10 @@ body {
   align-items: center;
 }
 
+
 .board {
-  width: 360px;
-  height: 360px;
+  width: 320px;
+  height: 320px;
   border: 3px solid var(--dark-gray);
   display: grid;
   grid-template-columns: repeat(8, 1fr);
@@ -186,7 +187,8 @@ body {
 
 .play-helper {
   position: absolute;
-  bottom: 118px;
+  /* sit 3px above the bottom bar (bottom bar height = 50px) */
+  bottom: calc(50px + 3px);
   width: 100%;
   text-align: center;
   font-size: 14px;
@@ -225,10 +227,10 @@ body {
     <div class="hl">
       <span>◀</span><span>▶</span>
     </div>
-    <div class="title">Partida em Andamento</div>
+    <div class="title">@@TITLE@@</div>
     <div class="top-actions">
-      <span class="action-btn">ENTER</span>
-      <span class="action-btn">ESC</span>
+      <span class="action-btn">@@B9@@</span>
+      <span class="action-btn">@@B10@@</span>
     </div>
   </div>
 
@@ -271,43 +273,45 @@ body {
     <div class="side-panel">
 
       <div class="player-card">
-        <div class="player-name">WhitePlayer</div>
-        <div class="captured">♟ ♟ ♝</div>
+        <div class="player-name">@@ADVERSARY@@</div>
+        <div class="captured">@@ADVERSARY_CAPTURED@@</div>
       </div>
 
       <div class="moves">
-        <div class="move"><div class="num">1.</div><div class="w">e4</div><div class="b">c5</div></div>
-        <div class="move"><div class="num">2.</div><div class="w">Nf3</div><div class="b">d6</div></div>
-        <div class="move"><div class="num">3.</div><div class="w">d4</div><div class="b">cxd4</div></div>
-        <div class="move"><div class="num">4.</div><div class="w">Nxd4</div><div class="b">Nf6</div></div>
-        <div class="move"><div class="num">5.</div><div class="w">Nc3</div><div class="b">a6</div></div>
+        <div class="move"><div class="num">@@N1@@.</div><div class="w">@@WP1@@</div><div class="b">@@BP1@@</div></div>
+        <div class="move"><div class="num">@@N2@@.</div><div class="w">@@WP2@@</div><div class="b">@@BP2@@</div></div>
+        <div class="move"><div class="num">@@N3@@.</div><div class="w">@@WP3@@</div><div class="b">@@BP3@@</div></div>
+        <div class="move"><div class="num">@@N4@@.</div><div class="w">@@WP4@@</div><div class="b">@@BP4@@</div></div>
+        <div class="move"><div class="num">@@N5@@.</div><div class="w">@@WP5@@</div><div class="b">@@BP5@@</div></div>
+        <div class="move"><div class="num">@@N6@@.</div><div class="w">@@WP6@@</div><div class="b">@@BP6@@</div></div>
+        <div class="move"><div class="num">@@N7@@.</div><div class="w">@@WP7@@</div><div class="b">@@BP7@@</div></div>
+        <div class="move"><div class="num">@@N8@@.</div><div class="w">@@WP8@@</div><div class="b">@@BP8@@</div></div>
       </div>
 
       <div class="player-card">
-        <div class="player-name">BlackPlayer</div>
-        <div class="captured">♙ ♙</div>
+        <div class="player-name">@@USER@@</div>
+        <div class="captured">@@USER_CAPTURED@@</div>
       </div>
 
-      <div class="move-preview">Nf3</div>
+      <div class="move-preview">@@MOVE_PREVIEW@@</div>
     </div>
   </div>
 
   <div class="play-helper">
-    Escolha a peça • ENTER confirma • ESC cancela
+    @@HELPER_TEXT@@
   </div>
 
   <!-- BOTTOM BAR -->
   <div class="bottom-bar">
-    <div class="soft-btn">♙ Pawn</div>
-    <div class="soft-btn">♘ Knight</div>
-    <div class="soft-btn">♗ Bishop</div>
-    <div class="soft-btn">♖ Rook</div>
-    <div class="soft-btn">♕ Queen</div>
-    <div class="soft-btn">♔ King</div>
-    <div class="soft-btn">O-O</div>
-    <div class="soft-btn">O-O-O</div>
+    <div class="soft-btn">@@B1@@</div>
+    <div class="soft-btn">@@B2@@</div>
+    <div class="soft-btn">@@B3@@</div>
+    <div class="soft-btn">@@B4@@</div>
+    <div class="soft-btn">@@B5@@</div>
+    <div class="soft-btn">@@B6@@</div>
+    <div class="soft-btn">@@B7@@</div>
+    <div class="soft-btn">@@B8@@</div>
   </div>
-
 </div>
 </body>
 </html>

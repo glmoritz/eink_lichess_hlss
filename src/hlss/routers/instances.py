@@ -483,7 +483,18 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
             username=username,
             selected_adversary=selected_adversary,
             selected_color=selected_color,
-            button_actions=[],
+            button_actions=[
+                "◀ Adversário",
+                " ",
+                "◀ Cor",
+                " ",
+                " ",
+                " ",
+                "Cor ▶",
+                "▶ Adversário",
+                "ENTER",
+                "X",
+            ],
         )
     elif instance.current_screen == ScreenType.PLAY:
         # Render play screen - requires game state
@@ -494,8 +505,15 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
         if instance.current_game_id:
             game = db.get(Game, instance.current_game_id)
             if game:
-                board = chess.Board(game.fen)
+                board = chess.Board(game.initial_fen)
                 player_color = chess.WHITE if game.player_color.value == "white" else chess.BLACK
+                for move_uci in (game.moves or "").split():
+                    try:
+                        move = chess.Move.from_uci(move_uci)
+                        board.push(move)
+                    except ValueError:
+                        # Invalid move UCI, skip
+                        pass
 
                 image_data = renderer.render_play_screen(
                     board=board,
@@ -505,7 +523,6 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                         instance.linked_account.username if instance.linked_account else "Player"
                     ),
                     move_state=None,
-                    button_actions=[],
                 )
             else:
                 # Fallback to new match screen
