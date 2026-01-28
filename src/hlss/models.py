@@ -105,6 +105,7 @@ class Game(Base):
     raw_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_move: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     moves: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Space-separated UCI moves
+    move_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -232,7 +233,6 @@ class Instance(Base):
     )
 
     # Navigation state for move input
-    move_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON blob
     new_match_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Last frame tracking

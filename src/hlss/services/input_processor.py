@@ -565,53 +565,55 @@ class InputProcessorService:
             return False, "Not your turn"
 
         # Load or create move state
-        move_state = self._load_move_state(instance)
+        move_state = self._load_move_state(game)
         board = chess.Board(game.fen)
 
         # Process based on current step
         if move_state.step == MoveStateStep.SELECT_PIECE:
-            return self._handle_piece_selection(instance, button, move_state, board)
+            return self._handle_piece_selection(instance, game, button, move_state, board)
         elif move_state.step == MoveStateStep.SELECT_FILE:
-            return self._handle_file_selection(instance, button, move_state, board)
+            return self._handle_file_selection(instance, game, button, move_state, board)
         elif move_state.step == MoveStateStep.SELECT_RANK:
-            return self._handle_rank_selection(instance, button, move_state, board)
+            return self._handle_rank_selection(instance, game, button, move_state, board)
         elif move_state.step == MoveStateStep.DISAMBIGUATION:
-            return self._handle_disambiguation(instance, button, move_state, board)
+            return self._handle_disambiguation(instance, game, button, move_state, board)
         elif move_state.step == MoveStateStep.CONFIRM:
             return self._handle_confirmation(instance, button, move_state, game)
 
         return False, None
 
-    def _load_move_state(self, instance: Instance) -> MoveState:
-        """Load move state from instance or create new one."""
-        if instance.move_state:
+    def _load_move_state(self, game: Game) -> MoveState:
+        """Load move state from the game or create a new one."""
+        if game.move_state:
             try:
-                data = json.loads(instance.move_state)
-                return MoveState(**data)
+                data = json.loads(game.move_state)
+                if isinstance(data, dict):
+                    return MoveState(**data)
             except (json.JSONDecodeError, ValueError):
                 pass
         return MoveState()
 
-    def _save_move_state(self, instance: Instance, move_state: MoveState) -> None:
-        """Save move state to instance."""
-        instance.move_state = json.dumps(move_state.model_dump())
+    def _save_move_state(self, game: Game, move_state: MoveState) -> None:
+        """Save move state to the game."""
+        game.move_state = json.dumps(move_state.model_dump())
         self.db.commit()
 
-    def _clear_move_state(self, instance: Instance) -> None:
-        """Clear move state."""
-        instance.move_state = None
+    def _clear_move_state(self, game: Game) -> None:
+        """Clear move state from the game."""
+        game.move_state = None
         self.db.commit()
 
     def _handle_piece_selection(
         self,
         instance: Instance,
+        game: Game,
         button: ButtonType,
         move_state: MoveState,
         board: chess.Board,
     ) -> tuple[bool, Optional[str]]:
         """Handle piece type selection."""
         if button == ButtonType.ESC:
-            self._clear_move_state(instance)
+            self._clear_move_state(game)
             return True, None
 
         piece = self.PIECE_BUTTONS.get(button)
@@ -634,7 +636,7 @@ class InputProcessorService:
             if castle_move:
                 move_state.pending_move = castle_move.uci()
                 move_state.step = MoveStateStep.CONFIRM
-                self._save_move_state(instance, move_state)
+                self._save_move_state(game, move_state)
                 return True, None
             else:
                 return False, "Castling not legal"
@@ -652,12 +654,13 @@ class InputProcessorService:
 
         move_state.selected_piece = piece
         move_state.step = MoveStateStep.SELECT_FILE
-        self._save_move_state(instance, move_state)
+        self._save_move_state(game, move_state)
         return True, None
 
     def _handle_file_selection(
         self,
         instance: Instance,
+        game: Game,
         button: ButtonType,
         move_state: MoveState,
         board: chess.Board,
@@ -666,7 +669,7 @@ class InputProcessorService:
         if button == ButtonType.ESC:
             move_state.step = MoveStateStep.SELECT_PIECE
             move_state.selected_piece = None
-            self._save_move_state(instance, move_state)
+            self._save_move_state(game, move_state)
             return True, None
 
         file = self.FILE_BUTTONS.get(button)
@@ -677,12 +680,13 @@ class InputProcessorService:
         # (simplified - full implementation would check legal moves)
         move_state.selected_file = file
         move_state.step = MoveStateStep.SELECT_RANK
-        self._save_move_state(instance, move_state)
+        self._save_move_state(game, move_state)
         return True, None
 
     def _handle_rank_selection(
         self,
         instance: Instance,
+        game: Game,
         button: ButtonType,
         move_state: MoveState,
         board: chess.Board,
@@ -691,7 +695,7 @@ class InputProcessorService:
         if button == ButtonType.ESC:
             move_state.step = MoveStateStep.SELECT_FILE
             move_state.selected_file = None
-            self._save_move_state(instance, move_state)
+            self._save_move_state(game, move_state)
             return True, None
 
         rank = self.RANK_BUTTONS.get(button)
@@ -725,12 +729,13 @@ class InputProcessorService:
             move_state.disambiguation_options = [m.uci() for m in matching_moves]
             move_state.step = MoveStateStep.DISAMBIGUATION
 
-        self._save_move_state(instance, move_state)
+        self._save_move_state(game, move_state)
         return True, None
 
     def _handle_disambiguation(
         self,
         instance: Instance,
+        game: Game,
         button: ButtonType,
         move_state: MoveState,
         board: chess.Board,
@@ -740,7 +745,7 @@ class InputProcessorService:
             move_state.step = MoveStateStep.SELECT_RANK
             move_state.selected_rank = None
             move_state.disambiguation_options = []
-            self._save_move_state(instance, move_state)
+            self._save_move_state(game, move_state)
             return True, None
 
         # Map buttons to disambiguation options
@@ -748,7 +753,7 @@ class InputProcessorService:
         if btn_num and btn_num <= len(move_state.disambiguation_options):
             move_state.pending_move = move_state.disambiguation_options[btn_num - 1]
             move_state.step = MoveStateStep.CONFIRM
-            self._save_move_state(instance, move_state)
+            self._save_move_state(game, move_state)
             return True, None
 
         return False, None
@@ -763,14 +768,14 @@ class InputProcessorService:
         """Handle move confirmation."""
         if button == ButtonType.ESC:
             # Cancel the move
-            self._clear_move_state(instance)
+            self._clear_move_state(game)
             return True, None
 
         if button == ButtonType.ENTER:
             # Confirm the move - will be sent to Lichess
             # The actual move submission is handled by a separate service
             # For now, just clear the move state
-            self._clear_move_state(instance)
+            self._clear_move_state(game)
             return True, move_state.pending_move  # Return the move to be executed
 
         return False, None

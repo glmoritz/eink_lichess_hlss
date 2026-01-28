@@ -27,6 +27,7 @@ from hlss.schemas import (
     InstanceInitResponse,
     InstanceResponse,
     InstanceStatusResponse,
+    MoveState,
     RenderResponse,
 )
 from hlss.security import require_llss_auth
@@ -492,52 +493,23 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                 " ",
                 "Cor ▶",
                 "▶ Adversário",
+                " ",
                 "ENTER",
                 "X",
             ],
         )
     elif instance.current_screen == ScreenType.PLAY:
         # Render play screen - requires game state
-        import chess
-
-        from hlss.models import Game
-
         if instance.current_game_id:
-            game = db.get(Game, instance.current_game_id)
-            if game:
-                board = chess.Board(game.initial_fen)
-                player_color = chess.WHITE if game.player_color.value == "white" else chess.BLACK
-                for move_uci in (game.moves or "").split():
-                    try:
-                        move = chess.Move.from_uci(move_uci)
-                        board.push(move)
-                    except ValueError:
-                        # Invalid move UCI, skip
-                        pass
-
-                image_data = renderer.render_play_screen(
-                    board=board,
-                    player_color=player_color,
-                    opponent_name=game.opponent_username or "Unknown",
-                    player_name=(
-                        instance.linked_account.username if instance.linked_account else "Player"
-                    ),
-                    move_state=None,
-                )
-            else:
-                # Fallback to new match screen
-                image_data = renderer.render_new_match_screen(
-                    selected_user="Unknown",
-                    selected_color="random",
-                    button_actions=[],
-                )
-        else:
-            # No game selected, render new match
-            image_data = renderer.render_new_match_screen(
-                selected_user="Unknown",
-                selected_color="random",
-                button_actions=[],
+            image_data = renderer.render_play_screen(
+                game_id=instance.current_game_id,
+                player_name=(
+                    instance.linked_account.username if instance.linked_account else "Player"
+                ),
+                db=db,
             )
+        else:
+            image_data = renderer.render_setup_screen(config_url=instance.configuration_url or "")
     else:
         # Default to setup screen
         image_data = renderer.render_setup_screen(config_url=instance.configuration_url or "")
@@ -560,6 +532,22 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
     db.refresh(frame)
 
     return frame
+
+
+def _deserialize_move_state(serialized: Optional[str]) -> MoveState:
+    """Restore a MoveState from the stored JSON blob."""
+
+    if not serialized:
+        return MoveState()
+
+    try:
+        data = json.loads(serialized)
+        if isinstance(data, dict):
+            return MoveState(**data)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+    return MoveState()
 
 
 async def _submit_frame(instance: Instance, frame: Frame, db: Session) -> Optional[str]:

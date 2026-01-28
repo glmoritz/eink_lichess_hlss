@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Play Game - eInk Mockup</title>
+
+<style>
+:root {
+  --white: #ffffff;
+  --light-gray: #d5d5d5;
+  --dark-gray: #555555;
+  --black: #000000;
+}
+
+body {
+  background: #999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+  font-family: "Inter", "DejaVu Sans", sans-serif;
+}
+
+.screen {
+  width: 800px;
+  height: 480px;
+  background: var(--white);
+  border: 4px solid var(--dark-gray);
+  box-sizing: border-box;
+  position: relative;
+}
+
+/* ─────────── TOP BAR ─────────── */
+
+.top-bar {
+  height: 45px;
+  background: var(--light-gray);
+  border-bottom: 2px solid var(--dark-gray);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+
+.hl {
+  width: 140px;
+  font-size: 14px;
+}
+
+.hl span {
+  margin-right: 10px;
+}
+
+.title {
+  flex: 1;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.top-actions {
+  width: 180px;
+  text-align: right;
+}
+
+.action-btn {
+  display: inline-block;
+  padding: 6px 14px;
+  margin-left: 8px;
+  background: var(--dark-gray);
+  color: var(--white);
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+/* ─────────── PLAY AREA ─────────── */
+
+.play-area {
+  position: absolute;
+  top: 45px;
+  bottom: 112px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  box-sizing: border-box;
+}
+
+/* ─────────── BOARD (FIXED, SAFE) ─────────── */
+
+.board-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.chess-frame {
+  display: inline-block;
+  font-family: monospace;
+  color: var(--black);
+}
+
+/* files */
+.files {
+  display: grid;
+  grid-template-columns: 18px repeat(8, 1fr) 18px;
+  font-size: 10px;
+  text-align: center;
+  line-height: 14px;
+}
+
+/* board + ranks */
+.board-row {
+  display: flex;
+  border: 3px solid var(--dark-gray);
+}
+
+/* ranks */
+.ranks {
+  width: 18px;
+  display: grid;
+  grid-template-rows: repeat(8, 1fr);
+  font-size: 10px;
+}
+
+.ranks span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* board defines the size */
+.board {
+  width: 320px;
+  height: 320px;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+}
+
+.square {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+}
+
+.square.last-move {
+  box-shadow: inset 0 0 0 2px var(--dark-gray);
+}
+
+
+.square.light { background: #f5f5f5; }
+.square.dark  { background: #bcbcbc; }
+
+/* ─────────── SIDE PANEL ─────────── */
+
+.side-panel {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.player-card {
+  position: relative;
+  border: 2px solid var(--dark-gray);
+  border-radius: 14px;
+  padding: 10px 10px 8px;
+  margin-bottom: 8px;
+}
+
+.player-card,
+.moves-panel {
+  margin-top: 7px;
+}
+
+.player-label {
+  position: absolute;
+  top: -9px;
+  left: 14px;
+  background: var(--white);
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--black);
+}
+
+.captured {
+  font-size: 16px;
+  letter-spacing: 2px;
+  text-align: center;
+}
+
+/* ─────────── MOVE LIST ─────────── */
+
+.moves-panel {
+  position: relative;
+  border: 2px solid var(--dark-gray);
+  border-radius: 14px;
+  padding: 10px 8px 6px;
+  margin: 6px 0;  
+}
+
+.panel-label {
+  position: absolute;
+  top: -9px;
+  left: 14px;
+  background: var(--white);
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--black);
+}
+
+/* tighter rows */
+.move {
+  font-size: 14px;
+  display: flex;
+  justify-content: space-between;
+  line-height: 18px;
+}
+
+.move .num {
+  width: 22px;
+  color: var(--dark-gray);
+}
+
+.move .w,
+.move .b {
+  width: 74px;
+}
+
+
+.san-move .piece {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  vertical-align: 0px; /* fine-tune baseline alignment */
+}
+
+/* ─────────── MOVE PREVIEW ─────────── */
+
+.move-preview-panel {
+  position: relative;
+  border: 2px dashed var(--dark-gray);
+  border-radius: 12px;
+  padding: 12px 8px 8px;
+  margin-top: 14px;
+  height: 48px;
+  box-sizing: border-box;
+}
+
+/* reuse existing label style */
+.move-preview-panel .panel-label {
+  position: absolute;
+  top: -9px;
+  left: 14px;
+  background: var(--white);
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* actual text */
+.move-preview-content {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.move-preview-content svg {
+  height: 25px;
+  width: auto;
+  max-height: 100%;
+  vertical-align: -2px;
+}
+
+/* ─────────── HELPER ─────────── */
+
+.play-helper {
+  position: absolute;
+  bottom: calc(36px + 6px);
+  width: 100%;
+  text-align: center;
+  font-size: 14px;
+  color: var(--dark-gray);
+}
+
+/* ─────────── BOTTOM BAR ─────────── */
+
+.bottom-bar {
+  position: absolute;
+  bottom: 0;
+  height: 40px;
+  width: 100%;
+  background: var(--light-gray);
+  border-top: 2px solid var(--dark-gray);
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.soft-btn {
+  border-left: 1px solid var(--dark-gray);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 14px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="screen">
+
+  <div class="top-bar">
+    <div class="hl"><span>◀</span><span>▶</span></div>
+    <div class="title">@@TITLE@@</div>
+    <div class="top-actions">
+      <span class="action-btn">@@B9@@</span>
+      <span class="action-btn">@@B10@@</span>
+    </div>
+  </div>
+
+  <div class="play-area">
+
+    <!-- BOARD -->
+    <div class="board-wrapper">
+      <div class="chess-frame">
+
+        <div class="files">
+          <span></span>
+          <span>@@F1@@</span><span>@@F2@@</span><span>@@F3@@</span><span>@@F4@@</span>
+          <span>@@F5@@</span><span>@@F6@@</span><span>@@F7@@</span><span>@@F8@@</span>
+          <span></span>
+        </div>
+
+        <div class="board-row">
+
+          <div class="ranks">
+            <span>@@R1@@</span><span>@@R2@@</span><span>@@R3@@</span><span>@@R4@@</span>
+            <span>@@R5@@</span><span>@@R6@@</span><span>@@R7@@</span><span>@@R8@@</span>
+          </div>
+
+          <div class="board">
+            @@PIECES@@
+          </div>
+
+          <div class="ranks">
+            <span>@@R1@@</span><span>@@R2@@</span><span>@@R3@@</span><span>@@R4@@</span>
+            <span>@@R5@@</span><span>@@R6@@</span><span>@@R7@@</span><span>@@R8@@</span>
+          </div>
+
+        </div>
+
+        <div class="files">
+          <span></span>
+          <span>@@F1@@</span><span>@@F2@@</span><span>@@F3@@</span><span>@@F4@@</span>
+          <span>@@F5@@</span><span>@@F6@@</span><span>@@F7@@</span><span>@@F8@@</span>
+          <span></span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- SIDE PANEL -->
+    <div class="side-panel">
+      <div class="player-card">
+        <div class="player-label">@@ADVERSARY@@</div>
+        <div class="captured">@@ADVERSARY_CAPTURED@@</div>
+    </div>      
+
+    <div class="moves-panel">
+      <div class="panel-label">Últimas Jogadas</div>
+      <div class="move"><div class="num">@@N1@@.</div><div class="w">@@WP1@@</div><div class="b">@@BP1@@</div></div>
+      <div class="move"><div class="num">@@N2@@.</div><div class="w">@@WP2@@</div><div class="b">@@BP2@@</div></div>
+      <div class="move"><div class="num">@@N3@@.</div><div class="w">@@WP3@@</div><div class="b">@@BP3@@</div></div>
+      <div class="move"><div class="num">@@N4@@.</div><div class="w">@@WP4@@</div><div class="b">@@BP4@@</div></div>
+      <div class="move"><div class="num">@@N5@@.</div><div class="w">@@WP5@@</div><div class="b">@@BP5@@</div></div>
+      <div class="move"><div class="num">@@N6@@.</div><div class="w">@@WP6@@</div><div class="b">@@BP6@@</div></div>   
+    </div>
+
+    <div class="player-card">
+      <div class="player-label">@@USER@@</div>
+      <div class="captured">@@USER_CAPTURED@@</div>
+    </div>
+
+      <div class="move-preview-panel">
+        <div class="panel-label">Jogada Atual</div>
+        <div class="move-preview-content">@@MOVE_PREVIEW@@</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="play-helper">@@HELPER_TEXT@@</div>
+
+  <div class="bottom-bar">
+    <div class="soft-btn">@@B1@@</div>
+    <div class="soft-btn">@@B2@@</div>
+    <div class="soft-btn">@@B3@@</div>
+    <div class="soft-btn">@@B4@@</div>
+    <div class="soft-btn">@@B5@@</div>
+    <div class="soft-btn">@@B6@@</div>
+    <div class="soft-btn">@@B7@@</div>
+    <div class="soft-btn">@@B8@@</div>
+  </div>
+
+</div>
+</body>
+</html>
