@@ -766,12 +766,12 @@ class InputProcessorService:
         game: Game,
     ) -> tuple[bool, Optional[str]]:
         """Handle move confirmation."""
-        if button == ButtonType.ESC:
+        if button == ButtonType.BTN_8:
             # Cancel the move
             self._clear_move_state(game)
             return True, None
 
-        if button == ButtonType.ENTER:
+        if button == ButtonType.BTN_1:
             # Confirm the move - will be sent to Lichess
             # The actual move submission is handled by a separate service
             # For now, just clear the move state

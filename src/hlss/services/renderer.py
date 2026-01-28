@@ -546,16 +546,20 @@ class RendererService:
             elif advantage < 0:
                 adversary_captured_str += f" (+{abs(advantage)})"
 
-            replacements["@@USER_CAPTURED@@"] = adversary_captured_str
-            replacements["@@ADVERSARY_CAPTURED@@"] = user_captured_str
+            replacements["@@USER_CAPTURED@@"] = (
+                adversary_captured_str if adversary_captured_str else "     "
+            )
+            replacements["@@ADVERSARY_CAPTURED@@"] = (
+                user_captured_str if user_captured_str else "     "
+            )
 
             # Each move entry is a pair: (move number, white move, black move)
             num_entries = 6
             for i in range(1, 8 + 1):
                 replacements[f"@@N{i}@@"] = f"{board.fullmove_number +  i - 1}"
 
-                replacements[f"@@WP{i}@@"] = ""
-                replacements[f"@@BP{i}@@"] = ""
+                replacements[f"@@WP{i}@@"] = "   "
+                replacements[f"@@BP{i}@@"] = "   "
 
             move_start = len(moves) - num_entries if len(moves) > num_entries else 0
             total_moves = len(moves) - move_start
@@ -609,20 +613,14 @@ class RendererService:
                 )
 
                 # Render SVG pieces for each button if there is a valid move
-                for i in range(8):
-                    if i < 6:
-                        piece_type = self.PIECE_TYPE_MAP.values()[i]
-                        if piece_have_move[piece_type]:
-                            # Render SVG for this piece
-                            button_labels[i] = self.PIECE_SVG[player_color][
-                                f"{str(piece_type).upper()}"
-                            ]
-                    elif i == 6 and castle_kingside:
-                        # Draw O-O for kingside castle
-                        button_labels[i] = "O-O"
-                    elif i == 7 and castle_queenside:
-                        # Draw O-O-O for queenside castle
-                        button_labels[i] = "O-O-O"
+                for i, (label, piece) in enumerate(self.PIECE_TYPE_MAP.items()):
+                    if piece_have_move[piece]:
+                        # Render SVG for this piece
+                        button_labels[i] = self.PIECE_SVG[player_color][label]
+                # Draw castling buttons if available
+                button_labels[6] = "O-O" if castle_kingside else " "
+                button_labels[7] = "O-O-O" if castle_queenside else " "
+
                 replacements["@@HELPER_TEXT@@"] = "Selecione a peça para mover"
             elif (
                 move_state.step == MoveStateStep.SELECT_FILE
@@ -632,16 +630,7 @@ class RendererService:
                 selected_piece = getattr(move_state, "selected_piece", None)
                 valid_moves = []
                 if selected_piece:
-                    # Map piece symbol to chess piece type
-                    self.PIECE_TYPE_MAP = {
-                        "P": chess.PAWN,
-                        "N": chess.KNIGHT,
-                        "B": chess.BISHOP,
-                        "R": chess.ROOK,
-                        "Q": chess.QUEEN,
-                        "K": chess.KING,
-                    }
-                    selected_piece_type = piece_type_map.get(selected_piece.upper())
+                    selected_piece_type = self.PIECE_TYPE_MAP.get(selected_piece.upper())
                     if selected_piece_type:
                         # Find all legal moves for pieces of this type belonging to the player
                         for move in board.legal_moves:
