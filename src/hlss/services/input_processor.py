@@ -355,7 +355,7 @@ class InputProcessorService:
                     initial_fen=(
                         incoming_initial_fen
                         if incoming_initial_fen != "startpos"
-                        else "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+                        else chess.STARTING_FEN
                     ),
                     last_move=last_move,
                     moves=moves,
@@ -369,6 +369,94 @@ class InputProcessorService:
             self.db.commit()
 
         return sync_count
+
+    # def sync_single_game(self, account: LichessAccount, lichess_id: str) -> None:
+    #     """Sync a single game by lichess_id for the given account."""
+    #     if not account or not account.api_token:
+    #         return
+    #     lichess = LichessService(account.api_token)
+    #     stmt = select(Game).where(Game.lichess_game_id == lichess_id)
+    #     existing_game = self.db.scalar(stmt)
+    #     try:
+    #         stream = lichess.get_game_stream(lichess_id)
+    #         # The stream yields the current game state as the first item
+    #         try:
+    #             stream_event = next(stream)
+    #         except StopIteration:
+    #             stream_event = None
+    #         if isinstance(stream_event, dict):
+    #             player_color = self._determine_player_color(account.username, stream_event)
+    #             opponent_username = self._determine_opponent_username(
+    #                 account.username, stream_event
+    #             )
+    #             gamestate = stream_event.get("state")
+    #             status = self._map_game_status(gamestate)
+    #             moves = gamestate["moves"]
+    #             initial_fen = stream_event["initialFen"] or ""
+
+    #             # now mount the fen using the moves an the initial fen
+    #             board = chess.Board(initial_fen) if initial_fen else chess.Board()
+    #             for m in moves.split():
+    #                 try:
+    #                     board.push_uci(m)
+    #                 except Exception:
+    #                     raise
+    #             fen = board.fen()
+    #             is_my_turn = player_color == (GameColor.WHITE if board.turn else GameColor.BLACK)
+    #             if moves:
+    #                 parts = moves.split()
+    #                 last_move = parts[-1] if parts else ""
+    #             else:
+    #                 last_move = ""
+
+    #             if existing_game:
+    #                 existing_game.account_id = account.id
+    #                 existing_game.player_color = player_color
+    #                 existing_game.opponent_username = opponent_username
+    #                 existing_game.status = status
+    #                 existing_game.is_my_turn = is_my_turn
+    #                 existing_game.last_move = last_move
+
+    #                 if existing_game.initial_fen and existing_game.moves:
+    #                     new_initial, new_moves = self._merge_moves_and_initial_fen(
+    #                         existing_game.initial_fen,
+    #                         existing_game.moves or "",
+    #                         initial_fen,
+    #                         moves or "",
+    #                     )
+    #                     existing_game.initial_fen = new_initial
+    #                     existing_game.moves = new_moves
+    #                 else:
+    #                     existing_game.fen = fen
+    #                     existing_game.initial_fen = (
+    #                         initial_fen if initial_fen != "startpos" else chess.STARTING_FEN
+    #                     )
+    #                     existing_game.moves = moves
+    #             else:
+    #                 new_game = Game(
+    #                     lichess_game_id=lichess_id,
+    #                     account_id=account.id,
+    #                     player_color=player_color,
+    #                     opponent_username=opponent_username,
+    #                     status=status,
+    #                     is_my_turn=is_my_turn,
+    #                     fen=fen,
+    #                     initial_fen=(
+    #                         incoming_initial_fen
+    #                         if incoming_initial_fen != "startpos"
+    #                         else chess.STARTING_FEN
+    #                     ),
+    #                     last_move=last_move,
+    #                     moves=moves,
+    #                     raw_json=(
+    #                         json.dumps(stream_event) if isinstance(stream_event, dict) else None
+    #                     ),
+    #                 )
+    #                 self.db.add(new_game)
+
+    #     except Exception:
+    #         # If stream fails, fall back to provided game_data
+    #         pass
 
     def _determine_player_color(self, username: str, game_data: dict[str, Any]) -> GameColor:
         if game_data["color"].lower() == "white":

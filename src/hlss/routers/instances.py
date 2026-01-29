@@ -16,7 +16,16 @@ from sqlalchemy.orm import Session
 
 from hlss.config import get_settings
 from hlss.database import get_db
-from hlss.models import ButtonType, Frame, InputEventType, Instance, LichessAccount, ScreenType
+from hlss.models import (
+    ButtonType,
+    Frame,
+    Game,
+    GameStatus,
+    InputEventType,
+    Instance,
+    LichessAccount,
+    ScreenType,
+)
 from hlss.models import InputEvent as InputEventModel
 from hlss.schemas import (
     FrameMetadataResponse,
@@ -32,6 +41,7 @@ from hlss.schemas import (
 )
 from hlss.security import require_llss_auth
 from hlss.services.input_processor import InputProcessorService
+from hlss.services.lichess import LichessService
 from hlss.services.renderer import RendererService
 
 router = APIRouter(prefix="/instances", tags=["instances"])
@@ -173,10 +183,29 @@ def receive_instance_input(
 
     # Process the input event synchronously
     processor = InputProcessorService(db)
-    state_changed, error = processor.process_button(
+    state_changed, move_uci = processor.process_button(
         instance=instance,
         button=ButtonType(data.button.value),
     )
+
+    # If a move was confirmed, send it to Lichess
+    if move_uci:
+        if not instance.current_game_id:
+            return {"status": "error", "message": "No active game to send move"}
+        game = db.get(Game, instance.current_game_id)
+        if not game:
+            return {"status": "error", "message": "Game not found"}
+        if not game.account:
+            return {"status": "error", "message": "No linked account"}
+
+        lichess_service = LichessService(game.account.api_token)
+        success = lichess_service.make_move(game.lichess_game_id, move_uci)
+        if not success:
+            return {"status": "error", "message": "Failed to send move to Lichess"}
+
+        # Sync the game state after sending the move using InputProcessorService
+        processor.sync_active_games_for_account(game.account_id)
+        db.commit()
 
     # Mark event as processed
     event.processed = True
@@ -193,7 +222,8 @@ def receive_instance_input(
     return {
         "status": "processed",
         "state_changed": state_changed,
-        "error": error,
+        "move_sent": move_uci is not None,
+        "move": move_uci,
     }
 
 

@@ -594,100 +594,112 @@ class RendererService:
                 last_move = chess.Move.from_uci(move_list[-1])
 
             preview = None
-            if move_state.step == MoveStateStep.SELECT_PIECE:
-                # Find all legal moves for the player
-                piece_have_move = {piece: False for piece in self.PIECE_TYPE_MAP.values()}
-                # Check piece legal moves
-                for move in board.legal_moves:
-                    piece_type = board.piece_type_at(move.from_square)
-                    if piece_type in piece_have_move:
-                        piece_have_move[piece_type] = True
+            if player_color == board.turn:
+                if move_state.step == MoveStateStep.SELECT_PIECE:
+                    # Find all legal moves for the player
+                    piece_have_move = {piece: False for piece in self.PIECE_TYPE_MAP.values()}
+                    # Check piece legal moves
+                    for move in board.legal_moves:
+                        piece_type = board.piece_type_at(move.from_square)
+                        if piece_type in piece_have_move:
+                            piece_have_move[piece_type] = True
 
-                # Add castling explicitly
-                castle_kingside = board.has_kingside_castling_rights(board.turn) and any(
-                    board.is_kingside_castling(m) for m in board.legal_moves
-                )
+                    # Add castling explicitly
+                    castle_kingside = board.has_kingside_castling_rights(board.turn) and any(
+                        board.is_kingside_castling(m) for m in board.legal_moves
+                    )
 
-                castle_queenside = board.has_queenside_castling_rights(board.turn) and any(
-                    board.is_queenside_castling(m) for m in board.legal_moves
-                )
+                    castle_queenside = board.has_queenside_castling_rights(board.turn) and any(
+                        board.is_queenside_castling(m) for m in board.legal_moves
+                    )
 
-                # Render SVG pieces for each button if there is a valid move
-                for i, (label, piece) in enumerate(self.PIECE_TYPE_MAP.items()):
-                    if piece_have_move[piece]:
-                        # Render SVG for this piece
-                        button_labels[i] = self.PIECE_SVG[player_color][label]
-                # Draw castling buttons if available
-                button_labels[6] = "O-O" if castle_kingside else " "
-                button_labels[7] = "O-O-O" if castle_queenside else " "
+                    # Render SVG pieces for each button if there is a valid move
+                    for i, (label, piece) in enumerate(self.PIECE_TYPE_MAP.items()):
+                        if piece_have_move[piece]:
+                            # Render SVG for this piece
+                            button_labels[i] = self.PIECE_SVG[player_color][label]
+                    # Draw castling buttons if available
+                    button_labels[6] = "O-O" if castle_kingside else " "
+                    button_labels[7] = "O-O-O" if castle_queenside else " "
 
-                replacements["@@HELPER_TEXT@@"] = "Selecione a peça para mover"
-            elif (
-                move_state.step == MoveStateStep.SELECT_FILE
-                or move_state.step == MoveStateStep.SELECT_RANK
-            ):
-                # Get the selected piece from move_state (e.g., 'R' for rook)
-                selected_piece = getattr(move_state, "selected_piece", None)
-                valid_moves = []
-                if selected_piece:
-                    selected_piece_type = self.PIECE_TYPE_MAP.get(selected_piece.upper())
-                    if selected_piece_type:
-                        # Find all legal moves for pieces of this type belonging to the player
-                        for move in board.legal_moves:
-                            piece = board.piece_at(move.from_square)
-                            if (
-                                piece
-                                and piece.piece_type == selected_piece_type
-                                and piece.color == player_color
-                            ):
-                                valid_moves.append(move)
+                    replacements["@@HELPER_TEXT@@"] = "Selecione a peça para mover"
+                elif (
+                    move_state.step == MoveStateStep.SELECT_FILE
+                    or move_state.step == MoveStateStep.SELECT_RANK
+                ):
+                    # Get the selected piece from move_state (e.g., 'R' for rook)
+                    selected_piece = getattr(move_state, "selected_piece", None)
+                    valid_moves = []
+                    if selected_piece:
+                        selected_piece_type = self.PIECE_TYPE_MAP.get(selected_piece.upper())
+                        if selected_piece_type:
+                            # Find all legal moves for pieces of this type belonging to the player
+                            for move in board.legal_moves:
+                                piece = board.piece_at(move.from_square)
+                                if (
+                                    piece
+                                    and piece.piece_type == selected_piece_type
+                                    and piece.color == player_color
+                                ):
+                                    valid_moves.append(move)
 
-                # Set button labels based on the step
-                if move_state.step == MoveStateStep.SELECT_FILE:
-                    # Collect unique files from valid_moves
-                    valid_files = []
-                    for move in valid_moves:
-                        file_index = chess.square_file(move.to_square)
-                        if file_index not in valid_files:
-                            valid_files.append(file_index)
-                    # Fill button_labels with file letters
-                    for i in range(8):
-                        button_labels[i] = chr(ord("a") + i) if i in valid_files else " "
-                    replacements["@@HELPER_TEXT@@"] = "Selecione a coluna de destino"
-                elif move_state.step == MoveStateStep.SELECT_RANK:
-                    # Get the selected file
-                    selected_file = getattr(move_state, "selected_file", None)
-                    if selected_file:
-                        file_index = ord(selected_file.lower()) - ord("a")
-                        # Filter moves to those with the selected file
-                        filtered_moves = [
-                            move
-                            for move in valid_moves
-                            if chess.square_file(move.to_square) == file_index
-                        ]
-                        # Collect unique ranks from filtered moves
-                        valid_ranks = []
-                        for move in filtered_moves:
-                            rank_index = chess.square_rank(move.to_square)
-                            if rank_index not in valid_ranks:
-                                valid_ranks.append(rank_index)
-                        # Fill button_labels with rank numbers
+                    # Set button labels based on the step
+                    if move_state.step == MoveStateStep.SELECT_FILE:
+                        # Collect unique files from valid_moves
+                        valid_files = []
+                        for move in valid_moves:
+                            file_index = chess.square_file(move.to_square)
+                            if file_index not in valid_files:
+                                valid_files.append(file_index)
+                        # Fill button_labels with file letters
                         for i in range(8):
-                            button_labels[i] = str(i + 1) if i in valid_ranks else " "
-                        replacements["@@HELPER_TEXT@@"] = "Selecione a linha de destino"
-            elif move_state.step == MoveStateStep.CONFIRM:
-                replacements["@@HELPER_TEXT@@"] = "Confirmar jogada??"
-                button_labels[0] = "CONFIRMAR"
-                button_labels[7] = "CANCELAR"
+                            button_labels[i] = chr(ord("a") + i) if i in valid_files else " "
+                        replacements["@@HELPER_TEXT@@"] = "Selecione a coluna de destino"
+                    elif move_state.step == MoveStateStep.SELECT_RANK:
+                        # Get the selected file
+                        selected_file = getattr(move_state, "selected_file", None)
+                        if selected_file:
+                            file_index = ord(selected_file.lower()) - ord("a")
+                            # Filter moves to those with the selected file
+                            filtered_moves = [
+                                move
+                                for move in valid_moves
+                                if chess.square_file(move.to_square) == file_index
+                            ]
+                            # Collect unique ranks from filtered moves
+                            valid_ranks = []
+                            for move in filtered_moves:
+                                rank_index = chess.square_rank(move.to_square)
+                                if rank_index not in valid_ranks:
+                                    valid_ranks.append(rank_index)
+                            # Fill button_labels with rank numbers
+                            for i in range(8):
+                                button_labels[i] = str(i + 1) if i in valid_ranks else " "
+                            replacements["@@HELPER_TEXT@@"] = "Selecione a linha de destino"
+                elif move_state.step == MoveStateStep.CONFIRM:
+                    replacements["@@HELPER_TEXT@@"] = "Confirmar jogada??"
+                    button_labels[0] = "CONFIRMAR"
+                    button_labels[7] = "CANCELAR"
 
-                last_move = chess.Move.from_uci(getattr(move_state, "pending_move", None))
-                preview = san_with_svg(board.san(last_move), player_color, big=True)
+                    last_move = chess.Move.from_uci(getattr(move_state, "pending_move", None))
+                    preview = san_with_svg(board.san(last_move), player_color, big=True)
+                    board.push(last_move)
+
+                # Build a compact move preview based on the current move_state
+                sel_piece = getattr(move_state, "selected_piece", None)
+                sel_file = getattr(move_state, "selected_file", None)
+                sel_rank = getattr(move_state, "selected_rank", None)
+                replacements["@@MOVE_TITLE@@"] = "Sua jogada:"
+            else:
+                replacements["@@TITLE@@"] = f"Esperando {opponent_name} jogar ..."
+                replacements["@@HELPER_TEXT@@"] = f"Esperando {opponent_name} jogar ..."
+                last_move = board.pop()  # undo last move
+                san = board.san(last_move)  # SAN is computed here
                 board.push(last_move)
-
-            # Build a compact move preview based on the current move_state
-            sel_piece = getattr(move_state, "selected_piece", None)
-            sel_file = getattr(move_state, "selected_file", None)
-            sel_rank = getattr(move_state, "selected_rank", None)
+                preview = san_with_svg(str(san), player_color, big=True)
+                replacements["@@MOVE_TITLE@@"] = "Sua última jogada:"
+                for i in range(10):
+                    button_labels[i] = "  "
 
             if not preview:
                 pc = sel_piece if sel_piece else "___"
@@ -757,108 +769,6 @@ class RendererService:
             except Exception:
                 return None
 
-            # # Open base image from HTML renderer
-            # base_img = Image.open(BytesIO(base_png)).convert("RGBA")
-
-            # # Compute board placement to match the HTML layout.
-            # # HTML uses left column 400px, board width/height 320px and centered inside that column.
-            # board_size = 320
-            # board_x = 50  # (400 - 320) / 2
-            # board_y = 70
-
-            # # Render the chess board to SVG and convert to PNG via cairosvg
-            # try:
-
-            #     svg = chess.svg.board(
-            #         board=board,
-            #         size=board_size,
-            #         lastmove=board.move_stack[-1] if board.move_stack else None,
-            #         orientation=(chess.WHITE if player_color == chess.WHITE else chess.BLACK),
-            #     )
-            #     board_png = cairosvg.svg2png(bytestring=svg.encode("utf-8"))
-            #     board_img = Image.open(BytesIO(board_png)).convert("RGBA")
-            #     # Paste board onto base image
-            #     base_img.paste(board_img, (board_x, board_y), board_img)
-            # except Exception:
-            #     pass
-
-            # # Board and move state context
-            # button_height = self.FOOTER_HEIGHT
-            # button_width = self.width // 8
-            # bar_top = self.height - button_height
-            # bar_center_y = bar_top + button_height // 2
-
-            # if move_state.step == MoveStateStep.SELECT_PIECE:
-
-            #     # Map button index to piece type for standard moves
-            #     piece_buttons = [
-            #         chess.PAWN,
-            #         chess.KNIGHT,
-            #         chess.BISHOP,
-            #         chess.ROOK,
-            #         chess.QUEEN,
-            #         chess.KING,
-            #     ]
-
-            #     # Find all legal moves for the player
-            #     piece_have_move = {piece: False for piece in piece_buttons}
-            #     # Check piece legal moves
-            #     for move in board.legal_moves:
-            #         piece_type = board.piece_type_at(move.from_square)
-            #         if piece_type in piece_have_move:
-            #             piece_have_move[piece_type] = True
-
-            #     # Add castling explicitly
-            #     castle_kingside = board.has_kingside_castling_rights(board.turn) and any(
-            #         board.is_kingside_castling(m) for m in board.legal_moves
-            #     )
-
-            #     castle_queenside = board.has_queenside_castling_rights(board.turn) and any(
-            #         board.is_queenside_castling(m) for m in board.legal_moves
-            #     )
-
-            #     # Render SVG pieces for each button if there is a valid move
-            #     for i in range(8):
-            #         btn_x = i * button_width
-            #         center_x = btn_x + button_width // 2
-            #         if i < 6:
-            #             piece_type = piece_buttons[i]
-            #             if piece_have_move[piece_type]:
-            #                 # Render SVG for this piece
-            #                 piece = chess.Piece(piece_type, player_color)
-            #                 svg = chess.svg.piece(piece, size=32)
-            #                 png_bytes = cairosvg.svg2png(
-            #                     bytestring=svg.encode("utf-8"), output_width=32, output_height=32
-            #                 )
-            #                 piece_img = Image.open(BytesIO(png_bytes)).convert("RGBA")
-            #                 img_x = center_x - piece_img.width // 2
-            #                 img_y = bar_center_y - piece_img.height // 2
-            #                 base_img.paste(piece_img, (img_x, img_y), piece_img)
-            #         elif i == 6 and castle_kingside:
-            #             # Draw O-O for kingside castle
-            #             text = "O-O"
-            #             draw = ImageDraw.Draw(base_img)
-            #             w, h = draw.textsize(text, font=self._font_large)
-            #             draw.text(
-            #                 (center_x - w // 2, bar_center_y - h // 2),
-            #                 text,
-            #                 fill=self.BLACK,
-            #                 font=self._font_large,
-            #             )
-            #         elif i == 7 and castle_queenside:
-            #             # Draw O-O-O for queenside castle
-            #             text = "O-O-O"
-            #             draw = ImageDraw.Draw(base_img)
-            #             w, h = draw.textsize(text, font=self._font_large)
-            #             draw.text(
-            #                 (center_x - w // 2, bar_center_y - h // 2),
-            #                 text,
-            #                 fill=self.BLACK,
-            #                 font=self._font_large,
-            #             )
-            # Return final PNG bytes
-            # Convert back to RGB for consistency with other renderers
-            # final_img = base_img.convert("RGB")
             return base_png
         else:
             return None
