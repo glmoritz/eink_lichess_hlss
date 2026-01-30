@@ -435,6 +435,7 @@ class RendererService:
                 return out
 
             moves = []
+            last_move = None
 
             current_move_number = board.fullmove_number
             white_play = None
@@ -470,15 +471,6 @@ class RendererService:
             from hlss.routers.instances import _deserialize_move_state
 
             move_state = _deserialize_move_state(game.move_state)
-
-            # Render the static HTML base first, then overlay the SVG board.
-            # Prepare simple replacements for the HTML template.
-
-            # SELECT_PIECE = "select_piece"
-            #     SELECT_FILE = "select_file"
-            #     SELECT_RANK = "select_rank"
-            #     DISAMBIGUATION = "disambiguation"
-            #     CONFIRM = "confirm"
 
             replacements = {"@@ADVERSARY@@": opponent_name, "@@USER@@": player_name}
 
@@ -577,146 +569,283 @@ class RendererService:
                 )
 
             button_labels = [" ", " ", " ", " ", " ", " ", " ", " ", " ", " "]
+            winner = None
 
-            button_labels[8] = "1/2"
-            button_labels[9] = "⚐"
-            # Title shows who is to move
-            is_player_turn = board.turn == player_color
-            replacements["@@TITLE@@"] = (
-                f"{player_name} jogando ..."
-                if is_player_turn
-                else f"Esperando {opponent_name} jogar ..."
-            )
+            # If the game is not started, show end reason and demand new game option
+            from hlss.models import GameStatus
 
-            move_list = (game.moves or "").split()
-            last_move = None
-            if len(move_list) > 0:
-                last_move = chess.Move.from_uci(move_list[-1])
+            if game.status != GameStatus.STARTED:
+                # Map status to human-readable reason
+                status_map = {
+                    GameStatus.MATE: "Xeque-mate",
+                    GameStatus.RESIGN: "Desistência",
+                    GameStatus.STALEMATE: "Afogamento",
+                    GameStatus.TIMEOUT: "Esgotamento de tempo",
+                    GameStatus.DRAW: "Empate",
+                    GameStatus.OUT_OF_TIME: "Esgotamento de tempo",
+                    GameStatus.ABORTED: "- Jogo Abortado",
+                    GameStatus.CHEAT: "- Cheat detectado",
+                    GameStatus.NO_START: "- Jogo Não iniciado",
+                    GameStatus.UNKNOWN_FINISH: "Finalização desconhecida",
+                    GameStatus.VARIANT_END: "Fim de variante",
+                }
+                reason = status_map.get(game.status, str(game.status.value))
 
-            preview = None
-            if player_color == board.turn:
-                if move_state.step == MoveStateStep.SELECT_PIECE:
-                    # Find all legal moves for the player
-                    piece_have_move = {piece: False for piece in self.PIECE_TYPE_MAP.values()}
-                    # Check piece legal moves
-                    for move in board.legal_moves:
-                        piece_type = board.piece_type_at(move.from_square)
-                        if piece_type in piece_have_move:
-                            piece_have_move[piece_type] = True
-
-                    # Add castling explicitly
-                    castle_kingside = board.has_kingside_castling_rights(board.turn) and any(
-                        board.is_kingside_castling(m) for m in board.legal_moves
-                    )
-
-                    castle_queenside = board.has_queenside_castling_rights(board.turn) and any(
-                        board.is_queenside_castling(m) for m in board.legal_moves
-                    )
-
-                    # Render SVG pieces for each button if there is a valid move
-                    for i, (label, piece) in enumerate(self.PIECE_TYPE_MAP.items()):
-                        if piece_have_move[piece]:
-                            # Render SVG for this piece
-                            button_labels[i] = self.PIECE_SVG[player_color][label]
-                    # Draw castling buttons if available
-                    button_labels[6] = "O-O" if castle_kingside else " "
-                    button_labels[7] = "O-O-O" if castle_queenside else " "
-
-                    replacements["@@HELPER_TEXT@@"] = "Selecione a peça para mover"
-                elif (
-                    move_state.step == MoveStateStep.SELECT_FILE
-                    or move_state.step == MoveStateStep.SELECT_RANK
-                ):
-                    # Get the selected piece from move_state (e.g., 'R' for rook)
-                    selected_piece = getattr(move_state, "selected_piece", None)
-                    valid_moves = []
-                    if selected_piece:
-                        selected_piece_type = self.PIECE_TYPE_MAP.get(selected_piece.upper())
-                        if selected_piece_type:
-                            # Find all legal moves for pieces of this type belonging to the player
-                            for move in board.legal_moves:
-                                piece = board.piece_at(move.from_square)
-                                if (
-                                    piece
-                                    and piece.piece_type == selected_piece_type
-                                    and piece.color == player_color
-                                ):
-                                    valid_moves.append(move)
-
-                    # Set button labels based on the step
-                    if move_state.step == MoveStateStep.SELECT_FILE:
-                        # Collect unique files from valid_moves
-                        valid_files = []
-                        for move in valid_moves:
-                            file_index = chess.square_file(move.to_square)
-                            if file_index not in valid_files:
-                                valid_files.append(file_index)
-                        # Fill button_labels with file letters
-                        for i in range(8):
-                            button_labels[i] = chr(ord("a") + i) if i in valid_files else " "
-                        replacements["@@HELPER_TEXT@@"] = "Selecione a coluna de destino"
-                    elif move_state.step == MoveStateStep.SELECT_RANK:
-                        # Get the selected file
-                        selected_file = getattr(move_state, "selected_file", None)
-                        if selected_file:
-                            file_index = ord(selected_file.lower()) - ord("a")
-                            # Filter moves to those with the selected file
-                            filtered_moves = [
-                                move
-                                for move in valid_moves
-                                if chess.square_file(move.to_square) == file_index
-                            ]
-                            # Collect unique ranks from filtered moves
-                            valid_ranks = []
-                            for move in filtered_moves:
-                                rank_index = chess.square_rank(move.to_square)
-                                if rank_index not in valid_ranks:
-                                    valid_ranks.append(rank_index)
-                            # Fill button_labels with rank numbers
-                            for i in range(8):
-                                button_labels[i] = str(i + 1) if i in valid_ranks else " "
-                            replacements["@@HELPER_TEXT@@"] = "Selecione a linha de destino"
-                elif move_state.step == MoveStateStep.CONFIRM:
-                    replacements["@@HELPER_TEXT@@"] = "Confirmar jogada??"
-                    button_labels[0] = "CONFIRMAR"
-                    button_labels[7] = "CANCELAR"
-
-                    last_move = chess.Move.from_uci(getattr(move_state, "pending_move", None))
-                    preview = san_with_svg(board.san(last_move), player_color, big=True)
-                    board.push(last_move)
-
-                # Build a compact move preview based on the current move_state
-                sel_piece = getattr(move_state, "selected_piece", None)
-                sel_file = getattr(move_state, "selected_file", None)
-                sel_rank = getattr(move_state, "selected_rank", None)
-                replacements["@@MOVE_TITLE@@"] = "Sua jogada:"
-            else:
-                replacements["@@TITLE@@"] = f"Esperando {opponent_name} jogar ..."
-                replacements["@@HELPER_TEXT@@"] = f"Esperando {opponent_name} jogar ..."
-                last_move = board.pop()  # undo last move
-                san = board.san(last_move)  # SAN is computed here
-                board.push(last_move)
-                preview = san_with_svg(str(san), player_color, big=True)
-                replacements["@@MOVE_TITLE@@"] = "Sua última jogada:"
-                for i in range(10):
-                    button_labels[i] = "  "
-
-            if not preview:
-                pc = sel_piece if sel_piece else "___"
-                fl = sel_file if sel_file else "___"
-                # If rank is stored as an int (0-based), convert to 1-based for display
-                if isinstance(sel_rank, int):
-                    rk = str(sel_rank + 1)
+                # Determine winner (human-readable) and compose winner_text
+                if game.status == GameStatus.MATE:
+                    winner = player_name if board.turn != player_color else opponent_name
+                elif game.status == GameStatus.RESIGN:
+                    winner = opponent_name if board.turn == player_color else player_name
+                elif game.status in [
+                    GameStatus.STALEMATE,
+                    GameStatus.DRAW,
+                    GameStatus.UNKNOWN_FINISH,
+                    GameStatus.VARIANT_END,
+                ]:
+                    # Many kinds of draws/variant ends — try to detect the specific reason
+                    # using python-chess helper methods (repetition, 75-move, insufficient material, etc.).
+                    winner = "Empate"
+                    # Prefer board-based detection when available
+                    try:
+                        if board.is_stalemate():
+                            reason = "Afogamento"
+                        elif board.is_insufficient_material():
+                            reason = "Material insuficiente"
+                        elif (
+                            getattr(board, "is_fivefold_repetition", None)
+                            and board.is_fivefold_repetition()
+                        ):
+                            reason = "Repetição (5x)"
+                        elif (
+                            getattr(board, "can_claim_threefold_repetition", None)
+                            and board.can_claim_threefold_repetition()
+                        ):
+                            reason = "Repetição (3x)"
+                        elif (
+                            getattr(board, "is_seventyfive_moves", None)
+                            and board.is_seventyfive_moves()
+                        ):
+                            reason = "75 movimentos sem avanço de peões"
+                        elif getattr(board, "is_fifty_moves", None) and board.is_fifty_moves():
+                            reason = "50 movimentos sem avanço de peões"
+                        else:
+                            # keep the previously derived reason from status_map
+                            pass
+                    except Exception:
+                        # If any detection fails, fall back to generic mapping
+                        pass
+                elif game.status == GameStatus.OUT_OF_TIME:
+                    # A player ran out of time. They lose unless the opponent
+                    # has insufficient mating material, in which case it's a draw.
+                    # The side to move in the final position is the side that
+                    # ran out of time.
+                    losing_color = board.turn
+                    winning_color = not losing_color
+                    try:
+                        # python-chess provides a board-level insufficient-material
+                        # detection. If it returns True the position is drawn by
+                        # insufficient material (no side can mate).
+                        if board.is_insufficient_material():
+                            winner = "Empate"
+                        else:
+                            winner = player_name if winning_color == player_color else opponent_name
+                    except Exception:
+                        # On any failure, conservatively treat as a loss for the
+                        # player who ran out of time.
+                        winner = player_name if winning_color == player_color else opponent_name
+                elif game.status == GameStatus.TIMEOUT:
+                    # Timeout here indicates connection forfeiture. Treat as a
+                    # loss for the player who disconnected (no insufficient-
+                    # material check).
+                    winner = opponent_name if board.turn == player_color else player_name
                 else:
-                    rk = str(sel_rank) if sel_rank else "___"
+                    winner = None
 
-                # Format as "Piece FileRank" (e.g. "R e4") with placeholders when missing
-                preview = f"{self.PIECE_SVG[player_color][pc] if pc in self.PIECE_SVG[player_color] else pc} {fl} {rk}"
+                if winner == "Empate":
+                    winner_text = "Empate"
+                elif winner:
+                    winner_text = f"Vencedor: {winner}"
+                else:
+                    winner_text = ""
 
-            replacements["@@MOVE_PREVIEW@@"] = preview
+                # Update only the end-of-game specific replacements so we don't lose
+                # previously computed values (captured pieces, move list, etc.).
+                end_repl = {
+                    "@@TITLE@@": f"Jogo encerrado: {reason}",
+                    "@@HELPER_TEXT@@": "Pressione ENTER para desafiar novamente",
+                    "@@MOVE_TITLE@@": "Jogo encerrado",
+                    "@@MOVE_PREVIEW@@": (
+                        f"{winner_text} ganhou por {reason}"
+                        if winner and winner != "Empate"
+                        else winner_text or f"Encerrado: {reason}"
+                    ),
+                    "@@ADVERSARY@@": game.opponent_username or "Unknown",
+                    "@@USER@@": player_name,
+                }
+                replacements.update(end_repl)
 
+                # Clear most buttons and offer a repeat challenge on B8 (index 7)
+                button_labels = [" "] * 10
+                button_labels[7] = "Repetir Jogo"
+            else:
+                button_labels[8] = "1/2"
+                button_labels[9] = "⚐"
+                # Title shows who is to move
+                is_player_turn = board.turn == player_color
+                replacements["@@TITLE@@"] = (
+                    f"{player_name} jogando ..."
+                    if is_player_turn
+                    else f"Esperando {opponent_name} jogar ..."
+                )
+
+                move_list = (game.moves or "").split()
+                if len(move_list) > 0:
+                    last_move = chess.Move.from_uci(move_list[-1])
+
+                preview = None
+                if player_color == board.turn:
+                    if move_state.step == MoveStateStep.SELECT_PIECE:
+                        # Find all legal moves for the player
+                        piece_have_move = {piece: False for piece in self.PIECE_TYPE_MAP.values()}
+                        # Check piece legal moves
+                        for move in board.legal_moves:
+                            piece_type = board.piece_type_at(move.from_square)
+                            if piece_type in piece_have_move:
+                                piece_have_move[piece_type] = True
+
+                        # Add castling explicitly
+                        castle_kingside = board.has_kingside_castling_rights(board.turn) and any(
+                            board.is_kingside_castling(m) for m in board.legal_moves
+                        )
+
+                        castle_queenside = board.has_queenside_castling_rights(board.turn) and any(
+                            board.is_queenside_castling(m) for m in board.legal_moves
+                        )
+
+                        # Render SVG pieces for each button if there is a valid move
+                        for i, (label, piece) in enumerate(self.PIECE_TYPE_MAP.items()):
+                            if piece_have_move[piece]:
+                                # Render SVG for this piece
+                                button_labels[i] = self.PIECE_SVG[player_color][label]
+                        # Draw castling buttons if available
+                        button_labels[6] = "O-O" if castle_kingside else " "
+                        button_labels[7] = "O-O-O" if castle_queenside else " "
+
+                        replacements["@@HELPER_TEXT@@"] = "Selecione a peça para mover"
+                    elif (
+                        move_state.step == MoveStateStep.SELECT_FILE
+                        or move_state.step == MoveStateStep.SELECT_RANK
+                    ):
+                        # Get the selected piece from move_state (e.g., 'R' for rook)
+                        selected_piece = getattr(move_state, "selected_piece", None)
+                        valid_moves = []
+                        if selected_piece:
+                            selected_piece_type = self.PIECE_TYPE_MAP.get(selected_piece.upper())
+                            if selected_piece_type:
+                                # Find all legal moves for pieces of this type belonging to the player
+                                for move in board.legal_moves:
+                                    piece = board.piece_at(move.from_square)
+                                    if (
+                                        piece
+                                        and piece.piece_type == selected_piece_type
+                                        and piece.color == player_color
+                                    ):
+                                        valid_moves.append(move)
+
+                        # Set button labels based on the step
+                        if move_state.step == MoveStateStep.SELECT_FILE:
+                            # Collect unique files from valid_moves
+                            valid_files = []
+                            for move in valid_moves:
+                                file_index = chess.square_file(move.to_square)
+                                if file_index not in valid_files:
+                                    valid_files.append(file_index)
+                            # Fill button_labels with file letters
+                            for i in range(8):
+                                button_labels[i] = chr(ord("a") + i) if i in valid_files else " "
+                            replacements["@@HELPER_TEXT@@"] = "Selecione a coluna de destino"
+                        elif move_state.step == MoveStateStep.SELECT_RANK:
+                            # Get the selected file
+                            selected_file = getattr(move_state, "selected_file", None)
+                            if selected_file:
+                                file_index = ord(selected_file.lower()) - ord("a")
+                                # Filter moves to those with the selected file
+                                filtered_moves = [
+                                    move
+                                    for move in valid_moves
+                                    if chess.square_file(move.to_square) == file_index
+                                ]
+
+                                pawn_captures = [
+                                    move
+                                    for move in valid_moves
+                                    if chess.square_file(move.from_square) == file_index
+                                    and board.piece_at(move.from_square).piece_type == chess.PAWN
+                                ]
+
+                                filtered_moves.extend(pawn_captures)
+
+                                # Collect unique ranks from filtered moves
+                                valid_ranks = []
+                                for move in filtered_moves:
+                                    rank_index = chess.square_rank(move.to_square)
+                                    if rank_index not in valid_ranks:
+                                        valid_ranks.append(rank_index)
+
+                                # Fill button_labels with rank numbers
+                                for i in range(8):
+                                    button_labels[i] = str(i + 1) if i in valid_ranks else " "
+                                replacements["@@HELPER_TEXT@@"] = "Selecione a linha de destino"
+                    elif move_state.step == MoveStateStep.DISAMBIGUATION:
+                        replacements["@@HELPER_TEXT@@"] = "Escolha a jogada desejada"
+                        for i, move_uci in enumerate(
+                            getattr(move_state, "disambiguation_options", [])
+                        ):
+                            if i < 10:
+                                move = chess.Move.from_uci(move_uci)
+                                san = board.san(move)
+                                button_labels[i] = san_with_svg(san, player_color, big=True)
+                    elif move_state.step == MoveStateStep.CONFIRM:
+                        replacements["@@HELPER_TEXT@@"] = "Confirmar jogada??"
+                        button_labels[0] = "CONFIRMAR"
+                        button_labels[7] = "CANCELAR"
+
+                        last_move = chess.Move.from_uci(getattr(move_state, "pending_move", None))
+                        preview = san_with_svg(board.san(last_move), player_color, big=True)
+                        board.push(last_move)
+
+                    # Build a compact move preview based on the current move_state
+                    sel_piece = getattr(move_state, "selected_piece", None)
+                    sel_file = getattr(move_state, "selected_file", None)
+                    sel_rank = getattr(move_state, "selected_rank", None)
+                    replacements["@@MOVE_TITLE@@"] = "Sua jogada:"
+                else:
+                    replacements["@@TITLE@@"] = f"Esperando {opponent_name} jogar ..."
+                    replacements["@@HELPER_TEXT@@"] = f"Esperando {opponent_name} jogar ..."
+                    last_move = board.pop()  # undo last move
+                    san = board.san(last_move)  # SAN is computed here
+                    board.push(last_move)
+                    preview = san_with_svg(str(san), player_color, big=True)
+                    replacements["@@MOVE_TITLE@@"] = "Sua última jogada:"
+                    for i in range(10):
+                        button_labels[i] = "  "
+
+                if not preview:
+                    pc = sel_piece if sel_piece else "___"
+                    fl = sel_file if sel_file else "___"
+                    # If rank is stored as an int (0-based), convert to 1-based for display
+                    if isinstance(sel_rank, int):
+                        rk = str(sel_rank + 1)
+                    else:
+                        rk = str(sel_rank) if sel_rank else "___"
+
+                    # Format as "Piece FileRank" (e.g. "R e4") with placeholders when missing
+                    preview = f"{self.PIECE_SVG[player_color][pc] if pc in self.PIECE_SVG[player_color] else pc} {fl} {rk}"
+
+                replacements["@@MOVE_PREVIEW@@"] = preview
+
+            # now draw the board squares
             board_html = []
-
             if player_color == chess.WHITE:
                 ranks = range(7, -1, -1)
                 files = range(0, 8)
@@ -728,9 +857,6 @@ class RendererService:
                 replacements[f"@@R{i+1}@@"] = str(ranks[i] + 1)
                 replacements[f"@@F{i+1}@@"] = chr(ord("a") + files[i])
 
-            last_from = last_move.from_square if last_move else None
-            last_to = last_move.to_square if last_move else None
-
             for rank in ranks:
                 for file in files:
                     sq = chess.square(file, rank)
@@ -741,10 +867,25 @@ class RendererService:
 
                     # last-move highlight
                     extra_class = ""
-                    if sq == last_from or sq == last_to:
-                        extra_class = " last-move"
+
+                    if last_move is not None:
+                        if sq == last_move.from_square or sq == last_move.to_square:
+                            extra_class = " last-move"
 
                     if piece:
+                        # Highlight the king of the losing side if there is a winner
+                        highlight_loser_king = False
+                        if winner is not None and winner != "Empate":
+                            # Determine the color of the losing side
+                            winner_color = (
+                                player_color if winner == player_name else adversary_color
+                            )
+                            loser_color = not winner_color
+                            if piece.piece_type == chess.KING and piece.color == loser_color:
+                                highlight_loser_king = True
+                        if highlight_loser_king:
+                            extra_class += " flipped"
+
                         cell = (
                             f'<div class="square {color_class}{extra_class}">'
                             f"{self.PIECE_SVG[piece.color][f"{piece.symbol().upper()}"]}"
@@ -772,167 +913,6 @@ class RendererService:
             return base_png
         else:
             return None
-
-    def _render_board(
-        self,
-        draw: ImageDraw.ImageDraw,
-        board: chess.Board,
-        x: int,
-        y: int,
-        size: int,
-        player_color: chess.Color,
-        last_move: Optional[chess.Move] = None,
-        pending_move: Optional[chess.Move] = None,
-    ) -> None:
-        """Render the chess board."""
-        square_size = size // 8
-
-        # Determine if board should be flipped
-        flip = player_color == chess.BLACK
-
-        for row in range(8):
-            for col in range(8):
-                # Calculate square coordinates
-                if flip:
-                    sq_x = x + (7 - col) * square_size
-                    sq_y = y + row * square_size
-                    square = chess.square(7 - col, 7 - row)
-                else:
-                    sq_x = x + col * square_size
-                    sq_y = y + (7 - row) * square_size
-                    square = chess.square(col, row)
-
-                # Square color
-                is_light = (row + col) % 2 == 0
-                fill = self.WHITE if is_light else self.GRAY
-
-                # Highlight last move
-                if last_move and square in [last_move.from_square, last_move.to_square]:
-                    fill = (200, 200, 150) if is_light else (150, 150, 100)
-
-                draw.rectangle(
-                    [sq_x, sq_y, sq_x + square_size, sq_y + square_size],
-                    fill=fill,
-                    outline=self.BLACK,
-                )
-
-                # Draw piece
-                piece = board.piece_at(square)
-                if piece:
-                    symbol = self.PIECE_SYMBOLS.get(piece.symbol(), "?")
-                    # Center the piece in the square
-                    text_x = sq_x + square_size // 2 - 8
-                    text_y = sq_y + square_size // 2 - 10
-                    draw.text((text_x, text_y), symbol, fill=self.BLACK, font=self._font_large)
-
-        # Draw pending move arrow
-        if pending_move:
-            self._draw_arrow(draw, x, y, square_size, pending_move, flip)
-
-        # Draw file letters (a-h)
-        for col in range(8):
-            file_letter = chr(ord("a") + (7 - col if flip else col))
-            draw.text(
-                (x + col * square_size + square_size // 2 - 4, y + size + 2),
-                file_letter,
-                fill=self.BLACK,
-                font=self._font_small,
-            )
-
-        # Draw rank numbers (1-8)
-        for row in range(8):
-            rank_num = str(row + 1 if flip else 8 - row)
-            draw.text(
-                (x - 12, y + row * square_size + square_size // 2 - 6),
-                rank_num,
-                fill=self.BLACK,
-                font=self._font_small,
-            )
-
-    def _draw_arrow(
-        self,
-        draw: ImageDraw.ImageDraw,
-        board_x: int,
-        board_y: int,
-        square_size: int,
-        move: chess.Move,
-        flip: bool,
-    ) -> None:
-        """Draw an arrow indicating a move."""
-        from_sq = move.from_square
-        to_sq = move.to_square
-
-        from_col, from_row = chess.square_file(from_sq), chess.square_rank(from_sq)
-        to_col, to_row = chess.square_file(to_sq), chess.square_rank(to_sq)
-
-        if flip:
-            from_col, from_row = 7 - from_col, 7 - from_row
-            to_col, to_row = 7 - to_col, 7 - to_row
-
-        from_x = board_x + from_col * square_size + square_size // 2
-        from_y = board_y + (7 - from_row) * square_size + square_size // 2
-        to_x = board_x + to_col * square_size + square_size // 2
-        to_y = board_y + (7 - to_row) * square_size + square_size // 2
-
-        # Draw thick line for arrow
-        draw.line([(from_x, from_y), (to_x, to_y)], fill=self.BLACK, width=3)
-
-    def _render_move_state(
-        self,
-        draw: ImageDraw.ImageDraw,
-        move_state: MoveState,
-        x: int,
-        y: int,
-    ) -> None:
-        """Render the current move input state."""
-        step_text = {
-            "select_piece": "Select piece",
-            "select_file": f"Select file ({move_state.selected_piece})",
-            "select_rank": f"Select rank ({move_state.selected_piece}{move_state.selected_file})",
-            "disambiguation": "Choose piece",
-            "confirm": f"Confirm: {move_state.pending_move}",
-        }
-
-        text = step_text.get(move_state.step.value, "")
-        draw.text((x, y), text, fill=self.BLACK, font=self._font_small)
-
-    def _render_button_panel(
-        self,
-        draw: ImageDraw.ImageDraw,
-        button_actions: list[ButtonAction],
-    ) -> None:
-        """Render the button action panel on the right edge."""
-        if not button_actions:
-            return
-
-        # Button panel on far right
-        panel_x = self.width - 100
-        panel_y = 20
-        button_height = 35
-
-        for action in button_actions:
-            # Draw button indicator
-            color = self.BLACK if action.enabled else self.GRAY
-            draw.rectangle(
-                [panel_x, panel_y, panel_x + 80, panel_y + button_height - 5],
-                outline=color,
-                width=1,
-            )
-            draw.text(
-                (panel_x + 5, panel_y + 8),
-                f"{action.button.value[-1]}: {action.label[:8]}",
-                fill=color,
-                font=self._font_small,
-            )
-            panel_y += button_height
-
-    def _image_to_bytes(self, img: Image.Image) -> bytes:
-        """Convert PIL Image to PNG bytes."""
-        buffer = BytesIO()
-        # Convert to grayscale for e-Ink optimization
-        img_gray = img.convert("L")
-        img_gray.save(buffer, format="PNG", optimize=True)
-        return buffer.getvalue()
 
     @staticmethod
     def compute_hash(image_data: bytes) -> str:

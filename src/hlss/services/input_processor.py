@@ -129,11 +129,17 @@ class InputProcessorService:
                         # Don't block navigation on sync failures
                         pass
 
+        from datetime import timedelta
+
         # Get current active games for this account
+        cutoff = datetime.utcnow() - timedelta(days=2)
         games = (
             self.db.query(Game)
             .filter(Game.account_id == instance.linked_account_id)
-            .filter(Game.status.in_([GameStatus.CREATED, GameStatus.STARTED]))
+            .filter(
+                (Game.status.in_([GameStatus.CREATED, GameStatus.STARTED]))
+                | (Game.updated_at >= cutoff)
+            )
             .order_by(Game.created_at)
             .all()
         )
@@ -262,7 +268,7 @@ class InputProcessorService:
         return True, message
 
     def sync_active_games_for_account(self, account_id: str) -> int:
-        """Fetch ongoing Lichess games for the account and persist them."""
+        """Fetch ongoing Lichess games for the account and persist them. Also update games that are no longer ongoing."""
         account = self.db.get(LichessAccount, account_id)
         if not account or not account.api_token:
             return 0
@@ -271,17 +277,20 @@ class InputProcessorService:
         ongoing = lichess.get_ongoing_games()
         sync_count = 0
 
+        # Track ongoing lichess_game_ids
+        ongoing_ids = set()
         for game_data in ongoing:
             lichess_id = game_data.get("fullId")
             if not lichess_id:
                 continue
+            ongoing_ids.add(lichess_id)
 
             stmt = select(Game).where(Game.lichess_game_id == lichess_id)
             existing_game = self.db.scalar(stmt)
 
             player_color = self._determine_player_color(account.username, game_data)
             opponent_username = self._determine_opponent_username(account.username, game_data)
-            status = self._map_game_status(game_data.get("status"))
+            status = self._map_game_status(game_data["status"]["name"])
             is_my_turn = bool(game_data.get("isMyTurn"))
             # Prefer the realtime stream to get the latest moves/fen
             fen = game_data.get("fen", "")
@@ -365,7 +374,43 @@ class InputProcessorService:
 
             sync_count += 1
 
-        if ongoing:
+        # Now, find all games in DB for this account with status STARTED that are not in ongoing_ids
+        db_games = (
+            self.db.query(Game)
+            .filter(Game.account_id == account.id)
+            .filter(Game.status == GameStatus.STARTED)
+            .all()
+        )
+        for db_game in db_games:
+            if db_game.lichess_game_id not in ongoing_ids:
+                # This game is no longer ongoing, so fetch its final state from Lichess
+                try:
+                    stream = lichess.get_game_stream(db_game.lichess_game_id)
+                    try:
+                        state = next(stream)
+                    except StopIteration:
+                        state = None
+                    if isinstance(state, dict):
+                        from datetime import datetime
+
+                        gamestate = state.get("state") or state
+                        db_game.moves = gamestate.get("moves")
+                        db_game.fen = gamestate.get("fen", db_game.fen)
+                        db_game.last_move = gamestate.get("lastMove", db_game.last_move)
+                        db_game.is_my_turn = bool(gamestate.get("isMyTurn", False))
+                        db_game.status = self._map_game_status(gamestate.get("status"))
+                        db_game.raw_json = json.dumps(
+                            state,
+                            default=lambda obj: (
+                                obj.isoformat() if hasattr(obj, "isoformat") else str(obj)
+                            ),
+                        )
+                except Exception:
+                    # If stream fails, just mark as finished with unknown status
+                    db_game.status = GameStatus.UNKNOWN_FINISH
+                sync_count += 1
+
+        if ongoing or db_games:
             self.db.commit()
 
         return sync_count
@@ -486,7 +531,7 @@ class InputProcessorService:
         }
         if not status_value:
             return GameStatus.UNKNOWN_FINISH
-        return mapping.get(status_value["name"].lower(), GameStatus.UNKNOWN_FINISH)
+        return mapping.get(status_value.lower(), GameStatus.UNKNOWN_FINISH)
 
     def _merge_moves_and_initial_fen(
         self,
@@ -795,15 +840,33 @@ class InputProcessorService:
 
         # Find legal moves to this square with selected piece
         piece_type = chess.PIECE_SYMBOLS.index(move_state.selected_piece.lower())
-        matching_moves = [
-            move
-            for move in board.legal_moves
-            if (
-                chess.square_name(move.to_square) == target_square
-                and board.piece_at(move.from_square)
-                and board.piece_at(move.from_square).piece_type == piece_type
-            )
-        ]
+        # Build matching moves, guarding against Optional[Piece] for type check
+        selected_file = move_state.selected_file
+        selected_file_idx = ord(selected_file) - ord("a") if selected_file else None
+
+        matching_moves: list[chess.Move] = []
+        for move in board.legal_moves:
+            if chess.square_name(move.to_square) != target_square:
+                continue
+            from_piece = board.piece_at(move.from_square)
+            if not from_piece:
+                continue
+            if from_piece.piece_type != piece_type:
+                continue
+            matching_moves.append(move)
+
+        # Additionally ensure pawns located in the selected file that can capture to the
+        # selected rank are included (e.g. captures or en-passant). This covers cases
+        # where the UI's "selected file" refers to the pawn's file.
+        if piece_type == chess.PAWN and selected_file_idx is not None:
+            for move in board.legal_moves:
+                if (
+                    chess.square_file(move.from_square) == selected_file_idx
+                    and chess.square_rank(move.to_square) == (rank - 1)
+                    and board.piece_at(move.from_square).piece_type == chess.PAWN
+                ):
+                    if move not in matching_moves:
+                        matching_moves.append(move)
 
         if not matching_moves:
             return False, "Invalid move"
@@ -914,7 +977,7 @@ class InputProcessorService:
             elif move_state.step == MoveStateStep.SELECT_RANK:
                 buttons = self._get_rank_buttons(board, move_state)
             elif move_state.step == MoveStateStep.DISAMBIGUATION:
-                buttons = self._get_disambiguation_buttons(move_state)
+                buttons = self._get_disambiguation_buttons(move_state, board)
             elif move_state.step == MoveStateStep.CONFIRM:
                 buttons[ButtonType.ENTER] = ("Confirm", True)
                 buttons[ButtonType.ESC] = ("Cancel", True)
@@ -987,13 +1050,23 @@ class InputProcessorService:
     def _get_disambiguation_buttons(
         self,
         move_state: MoveState,
+        board: chess.Board,
     ) -> dict[ButtonType, tuple[str, bool]]:
-        """Get disambiguation option buttons."""
+        """Get disambiguation option buttons.
+
+        Displays human-friendly SAN labels (e.g. `c4` vs `cxd4`) while
+        keeping the stored options as UCI strings in `move_state`.
+        """
         buttons: dict[ButtonType, tuple[str, bool]] = {}
 
-        for i, option in enumerate(move_state.disambiguation_options):
+        for i, option_uci in enumerate(move_state.disambiguation_options):
             btn = ButtonType(f"BTN_{i + 1}")
-            buttons[btn] = (option, True)
+            try:
+                mv = chess.Move.from_uci(option_uci)
+                label = board.san(mv)
+            except Exception:
+                label = option_uci
+            buttons[btn] = (label, True)
 
         buttons[ButtonType.ESC] = ("Back", True)
         return buttons
