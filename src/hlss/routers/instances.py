@@ -341,6 +341,38 @@ def get_frame_metadata(
         )
 
     # Check if we have a frame - if not, render one first
+    # If there is a current game, sync its state first and re-render if status changed
+    if instance.current_game_id and instance.linked_account_id:
+        try:
+            # Capture previous status
+            game_before = db.get(Game, instance.current_game_id)
+            prev_fen = game_before.fen if game_before else None
+
+            # Sync games for the linked account (may update this game's status)
+            processor = InputProcessorService(db)
+            processor.sync_active_games_for_account(instance.linked_account_id)
+
+            # Reload the game and check status
+            game_after = db.get(Game, instance.current_game_id)
+            new_fen = game_after.fen if game_after else None
+
+            # If status changed, re-render immediately to reflect new game state
+            if prev_fen is not None and new_fen is not None and prev_fen != new_fen:
+                frame = _render_frame(instance, db)
+                return FrameMetadataResponse(
+                    instance_id=instance_id,
+                    has_frame=True,
+                    frame_id=frame.id,
+                    frame_hash=frame.image_hash,
+                    screen_type=frame.screen_type.value if frame.screen_type else None,
+                    width=frame.width,
+                    height=frame.height,
+                    created_at=frame.created_at,
+                )
+        except Exception:
+            # Don't fail the endpoint on sync/render errors; fall back to existing frame
+            pass
+
     if not instance.last_frame_id:
         frame = _render_frame(instance, db)
     else:
