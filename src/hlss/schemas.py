@@ -38,6 +38,15 @@ class InputEventType(str, Enum):
     RELEASE = "RELEASE"
 
 
+class InputProcessStatus(str, Enum):
+    """Status for input processing results."""
+
+    NEW_FRAME = "NEW_FRAME"
+    NO_CHANGE = "NO_CHANGE"
+    POLL = "POLL"
+    ERROR = "ERROR"
+
+
 class GameColor(str, Enum):
     """Player color."""
 
@@ -149,6 +158,15 @@ class InputEventResponse(BaseModel):
     event_type: str
     event_timestamp: datetime
     processed: bool
+
+
+class InputProcessResponse(BaseModel):
+    """Schema for input processing result."""
+
+    status: InputProcessStatus
+    frame_id: Optional[str] = None
+    poll_after_ms: Optional[int] = None
+    message: Optional[str] = None
 
 
 # ============================================================================

@@ -7,6 +7,7 @@ input handling, and frame rendering.
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Annotated, Optional
 
@@ -31,6 +32,8 @@ from hlss.schemas import (
     FrameMetadataResponse,
     FrameSendResponse,
     InputEventCreate,
+    InputProcessResponse,
+    InputProcessStatus,
     InstanceCreate,
     InstanceInitRequest,
     InstanceInitResponse,
@@ -48,6 +51,12 @@ router = APIRouter(prefix="/instances", tags=["instances"])
 
 DbSession = Annotated[Session, Depends(get_db)]
 settings = get_settings()
+
+_UCI_MOVE_PATTERN = re.compile(r"^[a-h][1-8][a-h][1-8][qrbn]?$", re.IGNORECASE)
+
+
+def _is_uci_move(value: str) -> bool:
+    return bool(_UCI_MOVE_PATTERN.match(value))
 
 
 # ============================================================================
@@ -143,6 +152,7 @@ def initialize_instance(
 @router.post(
     "/{instance_id}/inputs",
     status_code=status.HTTP_200_OK,
+    response_model=InputProcessResponse,
     tags=["hlss-api", "inputs"],
 )
 def receive_instance_input(
@@ -151,7 +161,7 @@ def receive_instance_input(
     background_tasks: BackgroundTasks,
     db: DbSession,
     _: dict = Depends(require_llss_auth),
-) -> dict:
+) -> InputProcessResponse:
     """
     Receive input event from LLSS.
 
@@ -183,48 +193,72 @@ def receive_instance_input(
 
     # Process the input event synchronously
     processor = InputProcessorService(db)
-    state_changed, move_uci = processor.process_button(
+    state_changed, move_or_error = processor.process_button(
         instance=instance,
         button=ButtonType(data.button.value),
     )
 
+    move_uci: Optional[str] = None
+    info_message: Optional[str] = None
+    error_message: Optional[str] = None
+    if move_or_error:
+        if _is_uci_move(move_or_error):
+            move_uci = move_or_error
+        elif state_changed:
+            info_message = move_or_error
+        else:
+            error_message = move_or_error
+
     # If a move was confirmed, send it to Lichess
-    if move_uci:
+    if move_uci and not error_message:
         if not instance.current_game_id:
-            return {"status": "error", "message": "No active game to send move"}
-        game = db.get(Game, instance.current_game_id)
-        if not game:
-            return {"status": "error", "message": "Game not found"}
-        if not game.account:
-            return {"status": "error", "message": "No linked account"}
-
-        lichess_service = LichessService(game.account.api_token)
-        success = lichess_service.make_move(game.lichess_game_id, move_uci)
-        if not success:
-            return {"status": "error", "message": "Failed to send move to Lichess"}
-
-        # Sync the game state after sending the move using InputProcessorService
-        processor.sync_active_games_for_account(game.account_id)
-        db.commit()
+            error_message = "No active game to send move"
+        else:
+            game = db.get(Game, instance.current_game_id)
+            if not game:
+                error_message = "Game not found"
+            elif not game.account:
+                error_message = "No linked account"
+            else:
+                lichess_service = LichessService(game.account.api_token)
+                success = lichess_service.make_move(game.lichess_game_id, move_uci)
+                if not success:
+                    error_message = "Failed to send move to Lichess"
+                else:
+                    # Sync the game state after sending the move using InputProcessorService
+                    processor.sync_active_games_for_account(game.account_id)
+                    db.commit()
 
     # Mark event as processed
     event.processed = True
     event.processed_at = datetime.utcnow()
     db.commit()
 
+    if error_message:
+        return InputProcessResponse(status=InputProcessStatus.ERROR, message=error_message)
+
     if state_changed:
-        # Queue a render and frame submission to LLSS
-        background_tasks.add_task(
-            _render_and_submit_frame,
-            instance_id=instance.id,
+        # Render and submit immediately so LLSS can respond with a frame ID.
+        try:
+            import asyncio
+
+            frame_id = asyncio.run(_render_and_submit_frame(instance_id=instance.id))
+        except Exception:
+            frame_id = None
+
+        if frame_id:
+            return InputProcessResponse(
+                status=InputProcessStatus.NEW_FRAME,
+                frame_id=frame_id,
+                message=info_message,
+            )
+
+        return InputProcessResponse(
+            status=InputProcessStatus.ERROR,
+            message="Failed to render or submit frame",
         )
 
-    return {
-        "status": "processed",
-        "state_changed": state_changed,
-        "move_sent": move_uci is not None,
-        "move": move_uci,
-    }
+    return InputProcessResponse(status=InputProcessStatus.NO_CHANGE)
 
 
 @router.get(
@@ -641,11 +675,11 @@ async def _submit_frame(instance: Instance, frame: Frame, db: Session) -> Option
         frame.submitted_at = datetime.utcnow()
         db.commit()
 
-        return frame.id
+        return frame.llss_frame_id
     except Exception as e:
         # Log error but don't fail
         print(f"Failed to submit frame to LLSS: {e}")
-        return frame.id
+        return None
 
 
 async def _render_and_submit_frame(instance_id: str) -> Optional[str]:

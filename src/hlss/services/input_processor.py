@@ -22,6 +22,7 @@ from hlss.models import (
 )
 from hlss.schemas import MoveState, MoveStateStep
 from hlss.services.lichess import LichessService
+from hlss.services.move_selection import MoveSelectionHelper
 from hlss.services.new_match_state import (
     NEW_MATCH_COLORS,
     load_new_match_state,
@@ -736,6 +737,19 @@ class InputProcessorService:
         game.move_state = None
         self.db.commit()
 
+    def _return_legal_moves(self, board: chess.Board, move_state: MoveState) -> int:
+        """Check if there is a single legal move matching the current selection."""
+        if move_state.step == MoveStateStep.SELECT_PIECE:
+            return len(board.legal_moves)
+        elif move_state.step == MoveStateStep.SELECT_FILE:
+            return self._handle_file_selection(instance, game, button, move_state, board)
+        elif move_state.step == MoveStateStep.SELECT_RANK:
+            return self._handle_rank_selection(instance, game, button, move_state, board)
+        elif move_state.step == MoveStateStep.DISAMBIGUATION:
+            return self._handle_disambiguation(instance, game, button, move_state, board)
+        elif move_state.step == MoveStateStep.CONFIRM:
+            return self._handle_confirmation(instance, button, move_state, game)
+
     def _handle_piece_selection(
         self,
         instance: Instance,
@@ -775,18 +789,41 @@ class InputProcessorService:
                 return False, "Castling not legal"
 
         # Check if any legal move exists for this piece type
-        piece_type = chess.PIECE_SYMBOLS.index(piece.lower())
-        has_moves = any(
-            board.piece_at(move.from_square)
-            and board.piece_at(move.from_square).piece_type == piece_type
-            for move in board.legal_moves
-        )
+        piece_moves = MoveSelectionHelper.get_piece_moves(board, piece)
+        has_moves = bool(piece_moves)
 
         if not has_moves:
             return False, f"No legal moves for {piece}"
 
         move_state.selected_piece = piece
-        move_state.step = MoveStateStep.SELECT_FILE
+        move_state.selected_file = None
+        move_state.selected_rank = None
+        move_state.disambiguation_options = []
+        move_state.pending_move = None
+
+        file_options = MoveSelectionHelper.get_file_options_for_piece(board, piece)
+        if len(file_options) == 1:
+            move_state.selected_file = file_options[0]
+            rank_options = MoveSelectionHelper.get_rank_options_for_piece_and_file(
+                board, piece, file_options[0]
+            )
+            if len(rank_options) == 1:
+                move_state.selected_rank = rank_options[0]
+                matching_moves = MoveSelectionHelper.get_matching_moves_for_selection(
+                    board, piece, file_options[0], rank_options[0]
+                )
+                if not matching_moves:
+                    return False, "Invalid move"
+                if len(matching_moves) == 1:
+                    move_state.pending_move = matching_moves[0].uci()
+                    move_state.step = MoveStateStep.CONFIRM
+                else:
+                    move_state.disambiguation_options = [m.uci() for m in matching_moves]
+                    move_state.step = MoveStateStep.DISAMBIGUATION
+            else:
+                move_state.step = MoveStateStep.SELECT_RANK
+        else:
+            move_state.step = MoveStateStep.SELECT_FILE
         self._save_move_state(game, move_state)
         return True, None
 
@@ -809,10 +846,37 @@ class InputProcessorService:
         if not file:
             return False, None
 
-        # Validate file has legal moves for selected piece
-        # (simplified - full implementation would check legal moves)
+        selected_piece = move_state.selected_piece
+        if not selected_piece:
+            return False, None
+
+        file_options = MoveSelectionHelper.get_file_options_for_piece(board, selected_piece)
+        if file not in file_options:
+            return False, "Invalid file"
+
         move_state.selected_file = file
-        move_state.step = MoveStateStep.SELECT_RANK
+        move_state.selected_rank = None
+        move_state.disambiguation_options = []
+        move_state.pending_move = None
+
+        rank_options = MoveSelectionHelper.get_rank_options_for_piece_and_file(
+            board, selected_piece, file
+        )
+        if len(rank_options) == 1:
+            move_state.selected_rank = rank_options[0]
+            matching_moves = MoveSelectionHelper.get_matching_moves_for_selection(
+                board, selected_piece, file, rank_options[0]
+            )
+            if not matching_moves:
+                return False, "Invalid move"
+            if len(matching_moves) == 1:
+                move_state.pending_move = matching_moves[0].uci()
+                move_state.step = MoveStateStep.CONFIRM
+            else:
+                move_state.disambiguation_options = [m.uci() for m in matching_moves]
+                move_state.step = MoveStateStep.DISAMBIGUATION
+        else:
+            move_state.step = MoveStateStep.SELECT_RANK
         self._save_move_state(game, move_state)
         return True, None
 
@@ -835,38 +899,21 @@ class InputProcessorService:
         if not rank:
             return False, None
 
-        move_state.selected_rank = rank
-        target_square = f"{move_state.selected_file}{rank}"
-
-        # Find legal moves to this square with selected piece
-        piece_type = chess.PIECE_SYMBOLS.index(move_state.selected_piece.lower())
-        # Build matching moves, guarding against Optional[Piece] for type check
+        selected_piece = move_state.selected_piece
         selected_file = move_state.selected_file
-        selected_file_idx = ord(selected_file) - ord("a") if selected_file else None
+        if not selected_piece or not selected_file:
+            return False, None
 
-        matching_moves: list[chess.Move] = []
-        for move in board.legal_moves:
-            if chess.square_name(move.to_square) != target_square:
-                continue
-            from_piece = board.piece_at(move.from_square)
-            if not from_piece:
-                continue
-            if from_piece.piece_type != piece_type:
-                continue
-            matching_moves.append(move)
+        rank_options = MoveSelectionHelper.get_rank_options_for_piece_and_file(
+            board, selected_piece, selected_file
+        )
+        if rank not in rank_options:
+            return False, "Invalid rank"
 
-        # Additionally ensure pawns located in the selected file that can capture to the
-        # selected rank are included (e.g. captures or en-passant). This covers cases
-        # where the UI's "selected file" refers to the pawn's file.
-        if piece_type == chess.PAWN and selected_file_idx is not None:
-            for move in board.legal_moves:
-                if (
-                    chess.square_file(move.from_square) == selected_file_idx
-                    and chess.square_rank(move.to_square) == (rank - 1)
-                    and board.piece_at(move.from_square).piece_type == chess.PAWN
-                ):
-                    if move not in matching_moves:
-                        matching_moves.append(move)
+        move_state.selected_rank = rank
+        matching_moves = MoveSelectionHelper.get_matching_moves_for_selection(
+            board, selected_piece, selected_file, rank
+        )
 
         if not matching_moves:
             return False, "Invalid move"
@@ -967,7 +1014,7 @@ class InputProcessorService:
             if not game or not game.is_my_turn:
                 return buttons
 
-            move_state = self._load_move_state(instance)
+            move_state = self._load_move_state(game)
             board = chess.Board(game.fen)
 
             if move_state.step == MoveStateStep.SELECT_PIECE:
@@ -1006,13 +1053,19 @@ class InputProcessorService:
                 )
                 buttons[btn] = (piece, has_castle)
             else:
-                piece_type = chess.PIECE_SYMBOLS.index(piece.lower())
-                has_moves = any(
-                    board.piece_at(m.from_square)
-                    and board.piece_at(m.from_square).piece_type == piece_type
-                    for m in board.legal_moves
-                )
-                buttons[btn] = (piece, has_moves)
+                piece_moves = MoveSelectionHelper.get_piece_moves(board, piece)
+                has_moves = bool(piece_moves)
+                label = piece
+                if has_moves:
+                    file_options = MoveSelectionHelper.get_file_options_for_piece(board, piece)
+                    if len(file_options) == 1:
+                        label += file_options[0]
+                        rank_options = MoveSelectionHelper.get_rank_options_for_piece_and_file(
+                            board, piece, file_options[0]
+                        )
+                        if len(rank_options) == 1:
+                            label += str(rank_options[0])
+                buttons[btn] = (label, has_moves)
 
         buttons[ButtonType.ESC] = ("Cancel", True)
         return buttons
@@ -1025,10 +1078,16 @@ class InputProcessorService:
         """Get available file selection buttons."""
         buttons: dict[ButtonType, tuple[str, bool]] = {}
 
+        selected_piece = move_state.selected_piece
+        file_options = (
+            set(MoveSelectionHelper.get_file_options_for_piece(board, selected_piece))
+            if selected_piece
+            else set()
+        )
+
         for btn, file in self.FILE_BUTTONS.items():
-            # Simplified: show all files as available
-            # Full implementation would check which files have valid moves
-            buttons[btn] = (file.upper(), True)
+            enabled = file in file_options
+            buttons[btn] = (file.upper(), enabled)
 
         buttons[ButtonType.ESC] = ("Back", True)
         return buttons
@@ -1041,8 +1100,20 @@ class InputProcessorService:
         """Get available rank selection buttons."""
         buttons: dict[ButtonType, tuple[str, bool]] = {}
 
+        selected_piece = move_state.selected_piece
+        selected_file = move_state.selected_file
+        rank_options = (
+            set(
+                MoveSelectionHelper.get_rank_options_for_piece_and_file(
+                    board, selected_piece, selected_file
+                )
+            )
+            if selected_piece and selected_file
+            else set()
+        )
+
         for btn, rank in self.RANK_BUTTONS.items():
-            buttons[btn] = (str(rank), True)
+            buttons[btn] = (str(rank), rank in rank_options)
 
         buttons[ButtonType.ESC] = ("Back", True)
         return buttons

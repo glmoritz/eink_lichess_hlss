@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from hlss.config import get_settings
 from hlss.schemas import ButtonAction, MoveState, MoveStateStep, ScreenType
 from hlss.services.html_renderer import render_html_file_to_png
+from hlss.services.move_selection import MoveSelectionHelper
 
 
 class RendererService:
@@ -713,6 +714,46 @@ class RendererService:
                             if piece_type in piece_have_move:
                                 piece_have_move[piece_type] = True
 
+                        def piece_suffix(piece_type: int) -> str:
+                            moves = []
+                            for mv in board.legal_moves:
+                                piece = board.piece_at(mv.from_square)
+                                if (
+                                    piece
+                                    and piece.piece_type == piece_type
+                                    and piece.color == player_color
+                                ):
+                                    moves.append(mv)
+                            if not moves:
+                                return ""
+
+                            file_indices = {chess.square_file(mv.to_square) for mv in moves}
+                            if piece_type == chess.PAWN:
+                                file_indices.update(
+                                    chess.square_file(mv.from_square) for mv in moves
+                                )
+
+                            if len(file_indices) != 1:
+                                return ""
+
+                            file_index = next(iter(file_indices))
+                            suffix = chr(ord("a") + file_index)
+
+                            rank_indices = {
+                                chess.square_rank(mv.to_square)
+                                for mv in moves
+                                if chess.square_file(mv.to_square) == file_index
+                            }
+                            if piece_type == chess.PAWN:
+                                for mv in moves:
+                                    if chess.square_file(mv.from_square) == file_index:
+                                        rank_indices.add(chess.square_rank(mv.to_square))
+
+                            if len(rank_indices) == 1:
+                                suffix += str(next(iter(rank_indices)) + 1)
+
+                            return suffix
+
                         # Add castling explicitly
                         castle_kingside = board.has_kingside_castling_rights(board.turn) and any(
                             board.is_kingside_castling(m) for m in board.legal_moves
@@ -726,7 +767,9 @@ class RendererService:
                         for i, (label, piece) in enumerate(self.PIECE_TYPE_MAP.items()):
                             if piece_have_move[piece]:
                                 # Render SVG for this piece
-                                button_labels[i] = self.PIECE_SVG[player_color][label]
+                                suffix = piece_suffix(piece)
+                                base = self.PIECE_SVG[player_color][label]
+                                button_labels[i] = f"{base}{suffix}" if suffix else base
                         # Draw castling buttons if available
                         button_labels[6] = "O-O" if castle_kingside else " "
                         button_labels[7] = "O-O-O" if castle_queenside else " "
@@ -740,29 +783,41 @@ class RendererService:
                         selected_piece = getattr(move_state, "selected_piece", None)
                         valid_moves = []
                         if selected_piece:
-                            selected_piece_type = self.PIECE_TYPE_MAP.get(selected_piece.upper())
-                            if selected_piece_type:
-                                # Find all legal moves for pieces of this type belonging to the player
-                                for move in board.legal_moves:
-                                    piece = board.piece_at(move.from_square)
-                                    if (
-                                        piece
-                                        and piece.piece_type == selected_piece_type
-                                        and piece.color == player_color
-                                    ):
-                                        valid_moves.append(move)
+                            selected_piece_type = (
+                                self.PIECE_TYPE_MAP.get(selected_piece.upper())
+                                if selected_piece
+                                else None
+                            )
+                            valid_moves: list[chess.Move] = []
+                            if selected_piece and selected_piece_type:
+                                valid_moves = MoveSelectionHelper.get_piece_moves(
+                                    board, selected_piece
+                                )
 
                         # Set button labels based on the step
                         if move_state.step == MoveStateStep.SELECT_FILE:
-                            # Collect unique files from valid_moves
-                            valid_files = []
+                            file_rank_map: dict[int, set[int]] = {}
                             for move in valid_moves:
-                                file_index = chess.square_file(move.to_square)
-                                if file_index not in valid_files:
-                                    valid_files.append(file_index)
-                            # Fill button_labels with file letters
+                                to_file = chess.square_file(move.to_square)
+                                file_rank_map.setdefault(to_file, set()).add(
+                                    chess.square_rank(move.to_square)
+                                )
+                                if selected_piece_type == chess.PAWN:
+                                    from_file = chess.square_file(move.from_square)
+                                    file_rank_map.setdefault(from_file, set()).add(
+                                        chess.square_rank(move.to_square)
+                                    )
+
+                            # Fill button_labels with file letters (append rank if unique)
                             for i in range(8):
-                                button_labels[i] = chr(ord("a") + i) if i in valid_files else " "
+                                if i in file_rank_map:
+                                    label = chr(ord("a") + i)
+                                    ranks = file_rank_map[i]
+                                    if len(ranks) == 1:
+                                        label += str(next(iter(ranks)) + 1)
+                                    button_labels[i] = label
+                                else:
+                                    button_labels[i] = " "
                             replacements["@@HELPER_TEXT@@"] = "Selecione a coluna de destino"
                         elif move_state.step == MoveStateStep.SELECT_RANK:
                             # Get the selected file
