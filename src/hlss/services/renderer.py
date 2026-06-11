@@ -18,6 +18,7 @@ from hlss.config import get_settings
 from hlss.schemas import ButtonAction, MoveState, MoveStateStep, ScreenType
 from hlss.services.html_renderer import render_html_file_to_png
 from hlss.services.move_selection import MoveSelectionHelper
+from hlss.services.pil_engine import PilEngine
 
 
 class RendererService:
@@ -87,11 +88,18 @@ class RendererService:
         self.width = self.settings.default_display_width
         self.height = self.settings.default_display_height
 
+        # Self-contained color-aware 1bpp renderer (replaces HTML/Chrome where ported).
+        self.engine = PilEngine(self.width, self.height)
+
         # Try to load a suitable font
         self._font: Optional[ImageFont.FreeTypeFont] = None
         self._font_small: Optional[ImageFont.FreeTypeFont] = None
         self._font_large: Optional[ImageFont.FreeTypeFont] = None
         self._load_fonts()
+
+    def _use_pil(self) -> bool:
+        """Whether to use the self-contained PIL renderer for a ported screen."""
+        return self.settings.renderer_backend in ("auto", "pil")
 
     def _load_fonts(self) -> None:
         """Load fonts for rendering text."""
@@ -292,6 +300,9 @@ class RendererService:
         Returns:
             PNG image data
         """
+        if self._use_pil():
+            return self.engine.render_setup_screen(config_url)
+
         img = self._create_base_image()
         draw = ImageDraw.Draw(img)
 
@@ -333,39 +344,61 @@ class RendererService:
 
     def render_new_match_screen(
         self,
-        username: str,
-        selected_adversary: str,
-        selected_color: str,
-        button_actions: list[str],
+        mode: str,
+        card_title: str,
+        card_main: str,
+        card_sub: str,
+        primary_action: str,
+        secondary_action: str,
+        helper_text: str,
+        button_labels: list[str],
     ) -> bytes:
         """
         Render the new match creation screen.
 
         Args:
-            selected_user: Currently selected Lichess username
-            selected_color: Selected color (white/black/random)
-            button_actions: List of button action mappings
+            mode: Screen mode (e.g. 'incoming' or 'empty')
+            card_title: Title displayed above the card
+            card_main: Main card text
+            card_sub: Sub card text
+            primary_action: Primary action label
+            secondary_action: Secondary action label
+            helper_text: Helper text below card
+            button_labels: List of button labels (B1..B10)
 
         Returns:
             PNG image data
         """
-        names_pt_br = {"white": "Brancas", "black": "Pretas", "random": "Sorteio"}
+        if self._use_pil():
+            return self.engine.render_new_match_screen(
+                mode=mode,
+                card_title=card_title,
+                card_main=card_main,
+                card_sub=card_sub,
+                primary_action=primary_action,
+                secondary_action=secondary_action,
+                helper_text=helper_text,
+                button_labels=button_labels,
+            )
 
         replacements = {
-            "@@ADVERSARY@@": selected_adversary,
-            "@@PLAYERNAME@@": username,
-            "@@PLAYERCOLOR@@": names_pt_br[selected_color.lower()],
-            "@@HELPER_TEXT@@": "Use ◀ ▶ para selecionar • ENTER para criar o jogo",
-            "@@B1@@": button_actions[0] if len(button_actions) > 0 else " ",
-            "@@B2@@": button_actions[1] if len(button_actions) > 1 else " ",
-            "@@B3@@": button_actions[2] if len(button_actions) > 2 else " ",
-            "@@B4@@": button_actions[3] if len(button_actions) > 3 else " ",
-            "@@B5@@": button_actions[5] if len(button_actions) > 4 else " ",
-            "@@B6@@": button_actions[6] if len(button_actions) > 5 else " ",
-            "@@B7@@": button_actions[7] if len(button_actions) > 6 else " ",
-            "@@B8@@": button_actions[8] if len(button_actions) > 8 else " ",
-            "@@B9@@": button_actions[9] if len(button_actions) > 9 else " ",
-            "@@B10@@": button_actions[10] if len(button_actions) > 10 else " ",
+            "@@MODE@@": mode,
+            "@@CARD_TITLE@@": card_title,
+            "@@CARD_MAIN@@": card_main,
+            "@@CARD_SUB@@": card_sub,
+            "@@PRIMARY_ACTION@@": primary_action,
+            "@@SECONDARY_ACTION@@": secondary_action,
+            "@@HELPER_TEXT@@": helper_text,
+            "@@B1@@": button_labels[0] if len(button_labels) > 0 else " ",
+            "@@B2@@": button_labels[1] if len(button_labels) > 1 else " ",
+            "@@B3@@": button_labels[2] if len(button_labels) > 2 else " ",
+            "@@B4@@": button_labels[3] if len(button_labels) > 3 else " ",
+            "@@B5@@": button_labels[4] if len(button_labels) > 4 else " ",
+            "@@B6@@": button_labels[5] if len(button_labels) > 5 else " ",
+            "@@B7@@": button_labels[6] if len(button_labels) > 6 else " ",
+            "@@B8@@": button_labels[7] if len(button_labels) > 7 else " ",
+            "@@B9@@": button_labels[8] if len(button_labels) > 8 else " ",
+            "@@B10@@": button_labels[9] if len(button_labels) > 9 else " ",
         }
         return render_html_file_to_png(
             "/app/new_match_screen.html",
@@ -373,6 +406,438 @@ class RendererService:
             height=self.height,
             replacements=replacements,
         )
+
+    def render_play_screen_pil(self, game_id: str, player_name: str, db: Session) -> Optional[bytes]:
+        """Self-contained PIL play-screen renderer (no HTML/Chrome).
+
+        Builds an HTML-agnostic ``view`` dict (plain SAN strings, display-space
+        board coords, captured-piece lists, glyph-aware button tokens) and hands
+        it to :meth:`PilEngine.render_play`. Mirrors the data-prep of
+        :meth:`render_play_screen` so behavior stays identical, only the final
+        rasterization differs.
+        """
+        from hlss.models import Game
+
+        game = db.get(Game, game_id)
+        if not game:
+            return None
+        view = self._build_play_view(game, player_name, db)
+        if view is None:
+            return None
+        try:
+            return self.engine.render_play(view)
+        except Exception:
+            return None
+
+    def _build_play_view(self, game, player_name: str, db: Session) -> Optional[dict]:
+        """Build the HTML-agnostic PLAY ``view`` dict from a Game.
+
+        See :meth:`PilEngine.render_play` for the contract. Split out from
+        :meth:`render_play_screen_pil` so alternate renderers/prototypes can
+        reuse the exact data-prep.
+        """
+        from hlss.models import GameStatus
+
+        pos = (
+            game.initial_fen
+            if (game.initial_fen and game.initial_fen != "startpos")
+            else chess.STARTING_FEN
+        )
+        board = chess.Board(pos)
+        player_color = chess.WHITE if game.player_color.value == "white" else chess.BLACK
+        adversary_color = not player_color
+        player_is_white = player_color == chess.WHITE
+        opponent_name = game.opponent_username or "Unknown"
+
+        # ---- orientation helpers (display row 0 = top) ----
+        def to_disp(sq: int) -> tuple[int, int]:
+            f = chess.square_file(sq)
+            r = chess.square_rank(sq)
+            if player_color == chess.WHITE:
+                return f, 7 - r
+            return 7 - f, r
+
+        # ---- move history (plain SAN) + last move ----
+        moves: list[tuple[int, Optional[str], Optional[str]]] = []
+        current_move_number = board.fullmove_number
+        white_play: Optional[str] = None
+        black_play: Optional[str] = None
+        for uci in (game.moves or "").split():
+            move = chess.Move.from_uci(uci)
+            if move not in board.legal_moves:
+                raise ValueError(f"Illegal move {uci} at move {current_move_number}")
+            san = board.san(move)
+            if board.turn == chess.WHITE:
+                white_play = san
+            else:
+                black_play = san
+            board.push(move)
+            if board.turn == chess.WHITE:
+                moves.append((current_move_number, white_play, black_play))
+                current_move_number += 1
+                white_play = None
+                black_play = None
+        if white_play is not None:
+            moves.append((current_move_number, white_play, None))
+
+        from hlss.routers.instances import _deserialize_move_state
+
+        move_state = _deserialize_move_state(game.move_state)
+
+        # ---- captured pieces / material advantage ----
+        initial = {
+            chess.PAWN: 8,
+            chess.KNIGHT: 2,
+            chess.BISHOP: 2,
+            chess.ROOK: 2,
+            chess.QUEEN: 1,
+        }
+        values = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 3,
+            chess.BISHOP: 3,
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+        }
+        captured_count = {chess.WHITE: {}, chess.BLACK: {}}
+        for piece_color in (chess.WHITE, chess.BLACK):
+            for piece_type, count in initial.items():
+                captured_count[piece_color][piece_type] = count - len(
+                    board.pieces(piece_type, piece_color)
+                )
+
+        def captured_list(color: chess.Color) -> list[tuple[str, bool]]:
+            out: list[tuple[str, bool]] = []
+            for piece_type in initial:
+                n = captured_count[color][piece_type]
+                letter = chess.piece_symbol(piece_type).upper()
+                out.extend([(letter, color == chess.WHITE)] * max(0, n))
+            return out
+
+        player_lost = captured_list(player_color)
+        adversary_lost = captured_list(adversary_color)
+        player_lost_val = sum(captured_count[player_color][pt] * v for pt, v in values.items())
+        adversary_lost_val = sum(
+            captured_count[adversary_color][pt] * v for pt, v in values.items()
+        )
+        advantage = player_lost_val - adversary_lost_val
+        # Standard convention: pieces shown next to a player are the ones THAT
+        # player captured (the opponent's lost pieces). The "+N" sits with the
+        # side that is ahead on material.
+        adversary_captured = player_lost  # shown next to adversary name
+        user_captured = adversary_lost  # shown next to user name
+        adversary_adv = f"(+{advantage})" if advantage > 0 else ""
+        user_adv = f"(+{abs(advantage)})" if advantage < 0 else ""
+
+        # ---- view defaults ----
+        title = ""
+        move_title = ""
+        move_preview = ""
+        preview_lines: Optional[list[str]] = None
+        preview_white = player_is_white
+        last_move_sqs: list[tuple[int, int]] = []
+        loser_king: Optional[tuple[int, int]] = None
+        # buttons: list[10] of (label, white_bool, is_move_bool)
+        buttons: list[tuple[str, bool, bool]] = [(" ", True, False)] * 10
+
+        winner = None
+
+        if game.status != GameStatus.STARTED:
+            status_map = {
+                GameStatus.MATE: "Xeque-mate",
+                GameStatus.RESIGN: "Desistência",
+                GameStatus.STALEMATE: "Afogamento",
+                GameStatus.TIMEOUT: "Esgotamento de tempo",
+                GameStatus.DRAW: "Empate",
+                GameStatus.OUT_OF_TIME: "Esgotamento de tempo",
+                GameStatus.ABORTED: "Jogo Abortado",
+                GameStatus.CHEAT: "Cheat detectado",
+                GameStatus.NO_START: "Jogo Não iniciado",
+                GameStatus.UNKNOWN_FINISH: "Finalização desconhecida",
+                GameStatus.VARIANT_END: "Fim de variante",
+            }
+            reason = status_map.get(game.status, str(game.status.value))
+
+            if game.status == GameStatus.MATE:
+                winner = player_name if board.turn != player_color else opponent_name
+            elif game.status == GameStatus.RESIGN:
+                winner = opponent_name if board.turn == player_color else player_name
+            elif game.status in (
+                GameStatus.STALEMATE,
+                GameStatus.DRAW,
+                GameStatus.UNKNOWN_FINISH,
+                GameStatus.VARIANT_END,
+            ):
+                winner = "Empate"
+                try:
+                    if board.is_stalemate():
+                        reason = "Afogamento"
+                    elif board.is_insufficient_material():
+                        reason = "Material insuficiente"
+                    elif (
+                        getattr(board, "is_fivefold_repetition", None)
+                        and board.is_fivefold_repetition()
+                    ):
+                        reason = "Repetição (5x)"
+                    elif (
+                        getattr(board, "can_claim_threefold_repetition", None)
+                        and board.can_claim_threefold_repetition()
+                    ):
+                        reason = "Repetição (3x)"
+                    elif getattr(board, "is_seventyfive_moves", None) and board.is_seventyfive_moves():
+                        reason = "75 lances sem captura/peão"
+                    elif getattr(board, "is_fifty_moves", None) and board.is_fifty_moves():
+                        reason = "50 lances sem captura/peão"
+                except Exception:
+                    pass
+            elif game.status == GameStatus.OUT_OF_TIME:
+                losing_color = board.turn
+                winning_color = not losing_color
+                try:
+                    if board.is_insufficient_material():
+                        winner = "Empate"
+                    else:
+                        winner = player_name if winning_color == player_color else opponent_name
+                except Exception:
+                    winner = player_name if winning_color == player_color else opponent_name
+            elif game.status == GameStatus.TIMEOUT:
+                winner = opponent_name if board.turn == player_color else player_name
+
+            if winner == "Empate":
+                summary = f"Empate por {reason}"
+            elif winner:
+                summary = f"Vencedor: {winner}"
+            else:
+                summary = f"Encerrado: {reason}"
+
+            title = f"Jogo encerrado: {reason}"
+            move_title = "Jogo encerrado"
+            preview_lines = [summary, reason] if (winner and winner != "Empate") else [summary]
+            buttons = [(" ", True, False)] * 10
+            buttons[7] = ("Repetir Jogo", True, False)
+
+            # highlight the losing king
+            if winner and winner != "Empate":
+                winner_color = player_color if winner == player_name else adversary_color
+                loser_color = not winner_color
+                king_sq = board.king(loser_color)
+                if king_sq is not None:
+                    loser_king = to_disp(king_sq)
+        else:
+            buttons[8] = ("1/2", True, False)
+            buttons[9] = ("⚐", True, False)  # flag
+            is_player_turn = board.turn == player_color
+            title = (
+                f"{player_name} jogando ..."
+                if is_player_turn
+                else f"Esperando {opponent_name} jogar ..."
+            )
+
+            move_list = (game.moves or "").split()
+            if move_list:
+                lm = chess.Move.from_uci(move_list[-1])
+                last_move_sqs = [to_disp(lm.from_square), to_disp(lm.to_square)]
+
+            preview = None
+            sel_piece = getattr(move_state, "selected_piece", None)
+            sel_file = getattr(move_state, "selected_file", None)
+            sel_rank = getattr(move_state, "selected_rank", None)
+
+            if is_player_turn:
+                step = move_state.step
+                if step == MoveStateStep.SELECT_PIECE:
+                    piece_have_move = {pt: False for pt in self.PIECE_TYPE_MAP.values()}
+                    for mv in board.legal_moves:
+                        pt = board.piece_type_at(mv.from_square)
+                        if pt in piece_have_move:
+                            piece_have_move[pt] = True
+
+                    def piece_suffix(piece_type: int) -> str:
+                        mvs = [
+                            mv
+                            for mv in board.legal_moves
+                            if (p := board.piece_at(mv.from_square))
+                            and p.piece_type == piece_type
+                            and p.color == player_color
+                        ]
+                        if not mvs:
+                            return ""
+                        file_indices = {chess.square_file(mv.to_square) for mv in mvs}
+                        if piece_type == chess.PAWN:
+                            file_indices.update(chess.square_file(mv.from_square) for mv in mvs)
+                        if len(file_indices) != 1:
+                            return ""
+                        fidx = next(iter(file_indices))
+                        suffix = chr(ord("a") + fidx)
+                        rank_indices = {
+                            chess.square_rank(mv.to_square)
+                            for mv in mvs
+                            if chess.square_file(mv.to_square) == fidx
+                        }
+                        if piece_type == chess.PAWN:
+                            for mv in mvs:
+                                if chess.square_file(mv.from_square) == fidx:
+                                    rank_indices.add(chess.square_rank(mv.to_square))
+                        if len(rank_indices) == 1:
+                            suffix += str(next(iter(rank_indices)) + 1)
+                        return suffix
+
+                    for i, (letter, pt) in enumerate(self.PIECE_TYPE_MAP.items()):
+                        if piece_have_move[pt]:
+                            suffix = piece_suffix(pt)
+                            buttons[i] = (f"{letter}{suffix}" if suffix else letter,
+                                          player_is_white, True)
+                    castle_kingside = board.has_kingside_castling_rights(board.turn) and any(
+                        board.is_kingside_castling(m) for m in board.legal_moves
+                    )
+                    castle_queenside = board.has_queenside_castling_rights(board.turn) and any(
+                        board.is_queenside_castling(m) for m in board.legal_moves
+                    )
+                    buttons[6] = ("O-O", player_is_white, True) if castle_kingside else (" ", True, False)
+                    buttons[7] = ("O-O-O", player_is_white, True) if castle_queenside else (" ", True, False)
+                elif step in (MoveStateStep.SELECT_FILE, MoveStateStep.SELECT_RANK):
+                    selected_piece = sel_piece
+                    valid_moves: list[chess.Move] = []
+                    selected_piece_type = (
+                        self.PIECE_TYPE_MAP.get(selected_piece.upper()) if selected_piece else None
+                    )
+                    if selected_piece and selected_piece_type:
+                        valid_moves = MoveSelectionHelper.get_piece_moves(board, selected_piece)
+
+                    if step == MoveStateStep.SELECT_FILE:
+                        file_rank_map: dict[int, set[int]] = {}
+                        for mv in valid_moves:
+                            to_file = chess.square_file(mv.to_square)
+                            file_rank_map.setdefault(to_file, set()).add(
+                                chess.square_rank(mv.to_square)
+                            )
+                            if selected_piece_type == chess.PAWN:
+                                from_file = chess.square_file(mv.from_square)
+                                file_rank_map.setdefault(from_file, set()).add(
+                                    chess.square_rank(mv.to_square)
+                                )
+                        for i in range(8):
+                            if i in file_rank_map:
+                                label = chr(ord("a") + i)
+                                ranks_s = file_rank_map[i]
+                                if len(ranks_s) == 1:
+                                    label += str(next(iter(ranks_s)) + 1)
+                                buttons[i] = (label, True, False)
+                            else:
+                                buttons[i] = (" ", True, False)
+                    else:  # SELECT_RANK
+                        if sel_file:
+                            file_index = ord(sel_file.lower()) - ord("a")
+                            filtered = [
+                                mv for mv in valid_moves
+                                if chess.square_file(mv.to_square) == file_index
+                            ]
+                            filtered.extend(
+                                mv for mv in valid_moves
+                                if chess.square_file(mv.from_square) == file_index
+                                and board.piece_at(mv.from_square)
+                                and board.piece_at(mv.from_square).piece_type == chess.PAWN
+                            )
+                            valid_ranks = []
+                            for mv in filtered:
+                                ri = chess.square_rank(mv.to_square)
+                                if ri not in valid_ranks:
+                                    valid_ranks.append(ri)
+                            for i in range(8):
+                                buttons[i] = (str(i + 1), True, False) if i in valid_ranks else (" ", True, False)
+                elif step == MoveStateStep.DISAMBIGUATION:
+                    for i, move_uci in enumerate(
+                        getattr(move_state, "disambiguation_options", [])
+                    ):
+                        if i < 10:
+                            mv = chess.Move.from_uci(move_uci)
+                            buttons[i] = (board.san(mv), player_is_white, True)
+                elif step == MoveStateStep.CONFIRM:
+                    buttons[0] = ("CONFIRMAR", True, False)
+                    buttons[7] = ("CANCELAR", True, False)
+                    pend = chess.Move.from_uci(getattr(move_state, "pending_move", None))
+                    preview = board.san(pend)
+                    preview_white = player_is_white
+                    last_move_sqs = [to_disp(pend.from_square), to_disp(pend.to_square)]
+                    board.push(pend)
+
+                move_title = "Sua jogada:"
+                if preview is None:
+                    pc = sel_piece if sel_piece else "___"
+                    fl = sel_file if sel_file else "___"
+                    if isinstance(sel_rank, int):
+                        rk = str(sel_rank + 1)
+                    else:
+                        rk = str(sel_rank) if sel_rank else "___"
+                    preview = f"{pc} {fl} {rk}"
+                    preview_white = player_is_white
+                move_preview = preview
+            else:
+                title = f"Esperando {opponent_name} jogar ..."
+                move_title = "Sua última jogada:"
+                if move_list:
+                    lm = board.pop()
+                    move_preview = board.san(lm)
+                    board.push(lm)
+                    preview_white = player_is_white
+                buttons[:8] = [(" ", True, False)] * 8
+
+        # ---- board squares (after any CONFIRM preview push) ----
+        squares: list[tuple[int, int, Optional[str], bool]] = []
+        rank_labels: list[int] = []
+        file_labels: list[str] = []
+        for dr in range(8):
+            for dc in range(8):
+                if player_color == chess.WHITE:
+                    rank = 7 - dr
+                    file = dc
+                else:
+                    rank = dr
+                    file = 7 - dc
+                sq = chess.square(file, rank)
+                piece = board.piece_at(sq)
+                dark = bool((rank + file) % 2)
+                symbol = piece.symbol() if piece else None
+                squares.append((dc, dr, symbol, dark))
+        for dr in range(8):
+            rank = (7 - dr) if player_color == chess.WHITE else dr
+            rank_labels.append(rank + 1)
+        for dc in range(8):
+            file = dc if player_color == chess.WHITE else (7 - dc)
+            file_labels.append(chr(ord("a") + file))
+
+        last_move_san: Optional[str] = None
+        for _num, _w, _b in reversed(moves):
+            if _b:
+                last_move_san = _b
+                break
+            if _w:
+                last_move_san = _w
+                break
+
+        view = {
+            "title": title,
+            "orientation_white": player_is_white,
+            "squares": squares,
+            "last_move": last_move_sqs,
+            "last_move_san": last_move_san,
+            "loser_king": loser_king,
+            "rank_labels": rank_labels,
+            "file_labels": file_labels,
+            "user_name": player_name,
+            "adversary_name": opponent_name,
+            "user_captured": user_captured,
+            "adversary_captured": adversary_captured,
+            "user_adv": user_adv,
+            "adversary_adv": adversary_adv,
+            "moves": moves,
+            "move_title": move_title,
+            "move_preview": move_preview,
+            "preview_lines": preview_lines,
+            "preview_white": preview_white,
+            "buttons": buttons,
+        }
+        return view
 
     def render_play_screen(self, game_id: str, player_name: str, db: Session) -> bytes:
         """
@@ -386,6 +851,9 @@ class RendererService:
         Returns:
             PNG image data
         """
+        if self._use_pil():
+            return self.render_play_screen_pil(game_id, player_name, db)
+
         import chess
 
         from hlss.models import Game

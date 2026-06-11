@@ -3,6 +3,7 @@ Input processor service for handling device button events.
 """
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
@@ -18,16 +19,32 @@ from hlss.models import (
     GameStatus,
     Instance,
     LichessAccount,
+    LichessChallenge,
     ScreenType,
 )
 from hlss.schemas import MoveState, MoveStateStep
 from hlss.services.lichess import LichessService
 from hlss.services.move_selection import MoveSelectionHelper
 from hlss.services.new_match_state import (
+    AI_LEVELS,
     NEW_MATCH_COLORS,
+    ai_adversary_id,
+    ai_adversary_label,
     load_new_match_state,
     serialize_new_match_state,
 )
+
+
+@dataclass
+class AdversaryOption:
+    """A selectable opponent on the new-match screen — a Stockfish AI level or
+    a real human Adversary, unified so they share one selection cycle."""
+
+    id: str
+    lichess_username: str
+    friendly_name: str
+    is_ai: bool = False
+    ai_level: Optional[int] = None
 
 
 class InputProcessorService:
@@ -193,11 +210,50 @@ class InputProcessorService:
         button: ButtonType,
     ) -> tuple[bool, Optional[str]]:
         """Handle input on the new match screen."""
-        # BTN_1 - Previous adversary
-        # BTN_3 - Previous color
-        # BTN_6 - Next color
-        # BTN_8 - Next adversary
-        # ENTER - Create match placeholder
+        if instance.linked_account_id:
+            incoming = (
+                self.db.query(LichessChallenge)
+                .filter(LichessChallenge.account_id == instance.linked_account_id)
+                .order_by(LichessChallenge.created_at)
+                .first()
+            )
+        else:
+            incoming = None
+
+        if incoming:
+            account = self.db.get(LichessAccount, instance.linked_account_id)
+            if not account or not account.api_token:
+                return False, "Account not configured"
+
+            lichess = LichessService(account.api_token)
+
+            if button == ButtonType.ENTER:
+                success = lichess.accept_challenge(incoming.lichess_challenge_id)
+                if not success:
+                    return False, "Failed to accept challenge"
+
+                self.db.delete(incoming)
+                self.db.commit()
+                try:
+                    self.sync_active_games_for_account(account.id)
+                except Exception:
+                    pass
+                return True, "Challenge accepted"
+
+            if button == ButtonType.ESC:
+                success = lichess.decline_challenge(incoming.lichess_challenge_id)
+                if not success:
+                    return False, "Failed to decline challenge"
+
+                self.db.delete(incoming)
+                self.db.commit()
+                return True, "Challenge declined"
+
+            return False, None
+
+        # BTN_1 - Previous adversary   BTN_8 - Next adversary
+        # BTN_3 - Previous color       BTN_6 - Next color
+        # BTN_5 / ENTER - Create match (the on-screen "create" button is BTN_5)
         state = load_new_match_state(instance)
 
         if button == ButtonType.BTN_1:
@@ -212,7 +268,7 @@ class InputProcessorService:
         if button == ButtonType.BTN_6:
             return self._cycle_color(instance, state, direction=1)
 
-        if button == ButtonType.ENTER:
+        if button in (ButtonType.BTN_5, ButtonType.ENTER):
             return self._create_new_match(instance, state)
 
         if button == ButtonType.ESC:
@@ -225,7 +281,12 @@ class InputProcessorService:
         instance: Instance,
         state: dict[str, Optional[str]],
     ) -> tuple[bool, Optional[str]]:
-        """Create a new challenge on Lichess using the configured account."""
+        """Start a game from the new-match selection.
+
+        Stockfish AI -> a game starts immediately on Lichess; pull it into our
+        DB and jump straight to the PLAY screen. Human -> send a correspondence
+        challenge (they must accept before a game exists), and report it.
+        """
         if not instance.linked_account_id:
             return False, "No account linked"
 
@@ -233,40 +294,112 @@ class InputProcessorService:
         if not account or not account.api_token:
             return False, "Account not configured"
 
-        adversary_id = state.get("adversary_id")
-        if not adversary_id:
+        options = self._adversary_options(account.id)
+        if not options:
             return False, "No adversary selected"
-
-        adversary = self.db.get(Adversary, adversary_id)
-        if not adversary:
-            return False, "Adversary not found"
+        adversary_id = state.get("adversary_id")
+        selected = next((o for o in options if o.id == adversary_id), options[0])
 
         color = state.get("color") or NEW_MATCH_COLORS[0]
         if color not in NEW_MATCH_COLORS:
             color = NEW_MATCH_COLORS[0]
 
         lichess = LichessService(account.api_token)
+
+        if selected.is_ai:
+            try:
+                game = lichess.create_ai_challenge(level=selected.ai_level or 3, color=color)
+            except Exception as exc:
+                return False, f"Falha ao iniciar IA: {str(exc)[:80]}"
+            game_id = self._extract_game_id(game)
+            # Bring the freshly-created game into our DB, then open it.
+            try:
+                self.sync_active_games_for_account(account.id)
+            except Exception:
+                pass
+            local = self._find_local_game(account.id, game_id)
+            if local is not None:
+                instance.current_screen = ScreenType.PLAY
+                instance.current_game_id = local.id
+                self.db.commit()
+                return True, f"{selected.friendly_name}: jogo iniciado"
+            return True, f"{selected.friendly_name}: jogo criado"
+
+        # Human adversary -> correspondence challenge (needs the opponent to accept).
         try:
             challenge = lichess.create_challenge(
-                username=adversary.lichess_username,
+                username=selected.lichess_username,
                 color=color,
             )
         except Exception as exc:
-            err = str(exc)
-            return False, f"Failed to create challenge: {err[:80]}"
+            return False, f"Falha ao criar desafio: {str(exc)[:80]}"
 
-        friendly_name = adversary.friendly_name or adversary.lichess_username
-        challenge_id: Optional[str] = None
-        if isinstance(challenge, dict):
-            challenge_obj = challenge.get("challenge") or challenge
-            if isinstance(challenge_obj, dict):
-                challenge_id = challenge_obj.get("id")
-
-        message = f"Challenge sent to {friendly_name}"
+        challenge_id = self._extract_challenge_id(challenge)
+        message = f"Desafio enviado a {selected.friendly_name}"
         if challenge_id:
-            message = f"Challenge {challenge_id} sent to {friendly_name}"
-
+            message = f"Desafio {challenge_id} enviado a {selected.friendly_name}"
         return True, message
+
+    @staticmethod
+    def _extract_game_id(payload: Any) -> Optional[str]:
+        if isinstance(payload, dict):
+            obj = payload.get("game") or payload
+            if isinstance(obj, dict):
+                return obj.get("fullId") or obj.get("id")
+        return None
+
+    @staticmethod
+    def _extract_challenge_id(payload: Any) -> Optional[str]:
+        if isinstance(payload, dict):
+            obj = payload.get("challenge") or payload
+            if isinstance(obj, dict):
+                return obj.get("id")
+        return None
+
+    def _find_local_game(self, account_id: str, game_id: Optional[str]):
+        """Locate the freshly-synced Game for this account. Lichess returns an
+        8-char game id while we store the 12-char fullId, so match by prefix;
+        fall back to the newest active game."""
+        if game_id:
+            stmt = select(Game).where(
+                Game.account_id == account_id,
+                (Game.lichess_game_id == game_id)
+                | (Game.lichess_game_id.like(f"{game_id}%")),
+            )
+            game = self.db.scalar(stmt)
+            if game:
+                return game
+        stmt = (
+            select(Game)
+            .where(
+                Game.account_id == account_id,
+                Game.status.in_([GameStatus.CREATED, GameStatus.STARTED]),
+            )
+            .order_by(Game.created_at.desc())
+        )
+        return self.db.scalar(stmt)
+
+    def _adversary_options(self, account_id: str) -> list[AdversaryOption]:
+        """Selectable opponents: Stockfish AI levels first, then human friends."""
+        options: list[AdversaryOption] = [
+            AdversaryOption(
+                id=ai_adversary_id(level),
+                lichess_username=f"AI level {level}",
+                friendly_name=ai_adversary_label(level),
+                is_ai=True,
+                ai_level=level,
+            )
+            for level in AI_LEVELS
+        ]
+        for adv in self._get_adversaries_for_account(account_id):
+            options.append(
+                AdversaryOption(
+                    id=adv.id,
+                    lichess_username=adv.lichess_username,
+                    friendly_name=adv.friendly_name or adv.lichess_username,
+                )
+            )
+        return options
 
     def sync_active_games_for_account(self, account_id: str) -> int:
         """Fetch ongoing Lichess games for the account and persist them. Also update games that are no longer ongoing."""
@@ -392,8 +525,6 @@ class InputProcessorService:
                     except StopIteration:
                         state = None
                     if isinstance(state, dict):
-                        from datetime import datetime
-
                         gamestate = state.get("state") or state
                         db_game.moves = gamestate.get("moves")
                         db_game.fen = gamestate.get("fen", db_game.fen)
@@ -409,10 +540,77 @@ class InputProcessorService:
                 except Exception:
                     # If stream fails, just mark as finished with unknown status
                     db_game.status = GameStatus.UNKNOWN_FINISH
-                sync_count += 1
+            sync_count += 1
 
         if ongoing or db_games:
             self.db.commit()
+
+        # Sync incoming challenges
+        try:
+            challenges_payload = lichess.get_challenges()
+        except Exception:
+            challenges_payload = {}
+
+        incoming = challenges_payload.get("in") or challenges_payload.get("incoming") or []
+        incoming_ids: set[str] = set()
+
+        for challenge in incoming:
+            if not isinstance(challenge, dict):
+                continue
+            challenge_id = challenge.get("id")
+            if not challenge_id:
+                continue
+
+            incoming_ids.add(challenge_id)
+
+            challenger = challenge.get("challenger") or {}
+            variant = challenge.get("variant") or {}
+            time_control = challenge.get("timeControl") or {}
+
+            existing = (
+                self.db.query(LichessChallenge)
+                .filter(LichessChallenge.account_id == account_id)
+                .filter(LichessChallenge.lichess_challenge_id == challenge_id)
+                .first()
+            )
+
+            if not existing:
+                existing = LichessChallenge(
+                    account_id=account_id,
+                    lichess_challenge_id=challenge_id,
+                )
+                self.db.add(existing)
+
+            existing.challenger_username = challenger.get("name")
+            existing.challenger_title = challenger.get("title")
+            existing.rated = bool(challenge.get("rated", False))
+            existing.color = challenge.get("color")
+            existing.variant = variant.get("key") or variant.get("name")
+            existing.speed = challenge.get("speed")
+            existing.status = challenge.get("status")
+            existing.time_control_type = time_control.get("type")
+            existing.time_control_limit = time_control.get("limit")
+            existing.time_control_increment = time_control.get("increment")
+            existing.time_control_days = time_control.get("days")
+            existing.raw_json = json.dumps(challenge)
+            existing.updated_at = datetime.utcnow()
+
+        # Remove challenges no longer present
+        if incoming_ids:
+            (
+                self.db.query(LichessChallenge)
+                .filter(LichessChallenge.account_id == account_id)
+                .filter(~LichessChallenge.lichess_challenge_id.in_(incoming_ids))
+                .delete(synchronize_session=False)
+            )
+        else:
+            (
+                self.db.query(LichessChallenge)
+                .filter(LichessChallenge.account_id == account_id)
+                .delete(synchronize_session=False)
+            )
+
+        self.db.commit()
 
         return sync_count
 
@@ -621,17 +819,20 @@ class InputProcessorService:
         state: dict[str, Optional[str]],
         direction: int,
     ) -> tuple[bool, Optional[str]]:
-        """Cycle through the configured adversaries for this account."""
+        """Cycle through the selectable opponents (Stockfish AI + humans)."""
         if not instance.linked_account_id:
             return False, "No account linked"
 
-        adversaries = self._get_adversaries_for_account(instance.linked_account_id)
-        if not adversaries:
+        options = self._adversary_options(instance.linked_account_id)
+        if not options:
             return False, "No adversaries configured"
 
-        selected = self._select_adversary(adversaries, state.get("adversary_id"))
-        idx = adversaries.index(selected)
-        state["adversary_id"] = adversaries[(idx + direction) % len(adversaries)].id
+        ids = [o.id for o in options]
+        try:
+            idx = ids.index(state.get("adversary_id"))
+        except ValueError:
+            idx = 0
+        state["adversary_id"] = ids[(idx + direction) % len(ids)]
         self._save_new_match_state(instance, state)
         return True, None
 
@@ -694,6 +895,9 @@ class InputProcessorService:
         game = self.db.get(Game, instance.current_game_id)
         if not game:
             return False, "Game not found"
+
+        if game.status != GameStatus.STARTED:
+            return True, "Game finished"
 
         if not game.is_my_turn:
             return False, "Not your turn"
@@ -994,17 +1198,17 @@ class InputProcessorService:
             buttons[ButtonType.BTN_8] = ("Config", True)
 
         elif instance.current_screen == ScreenType.NEW_MATCH:
-            user_enabled = bool(
-                instance.linked_account_id
-                and self._get_adversaries_for_account(instance.linked_account_id)
-            )
+            # Stockfish AI is always selectable, so opponent cycling is enabled
+            # whenever an account is linked.
+            adv_enabled = bool(instance.linked_account_id)
             color_enabled = True
-            buttons[ButtonType.BTN_1] = ("Prev Opp", user_enabled)
-            buttons[ButtonType.BTN_3] = ("Prev Color", color_enabled)
-            buttons[ButtonType.BTN_6] = ("Next Color", color_enabled)
-            buttons[ButtonType.BTN_8] = ("Next Opp", user_enabled)
-            buttons[ButtonType.ENTER] = ("Create", True)
-            buttons[ButtonType.ESC] = ("Cancel", True)
+            buttons[ButtonType.BTN_1] = ("< Adv", adv_enabled)
+            buttons[ButtonType.BTN_3] = ("< Cor", color_enabled)
+            buttons[ButtonType.BTN_5] = ("Criar", adv_enabled)
+            buttons[ButtonType.BTN_6] = ("Cor >", color_enabled)
+            buttons[ButtonType.BTN_8] = ("Adv >", adv_enabled)
+            buttons[ButtonType.ENTER] = ("Criar", adv_enabled)
+            buttons[ButtonType.ESC] = ("Cancelar", True)
 
         elif instance.current_screen == ScreenType.PLAY:
             if not instance.current_game_id:

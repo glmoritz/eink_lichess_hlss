@@ -25,6 +25,7 @@ from hlss.models import (
     InputEventType,
     Instance,
     LichessAccount,
+    LichessChallenge,
     ScreenType,
 )
 from hlss.models import InputEvent as InputEventModel
@@ -396,7 +397,11 @@ def get_frame_metadata(
                 return FrameMetadataResponse(
                     instance_id=instance_id,
                     has_frame=True,
-                    frame_id=frame.id,
+                    # Report the id in LLSS's namespace once the frame has been
+                    # submitted, so LLSS recognizes a frame it already cached
+                    # (it keys off this id). Falls back to the HLSS id for a
+                    # not-yet-submitted frame, which makes LLSS pull it.
+                    frame_id=frame.llss_frame_id or frame.id,
                     frame_hash=frame.image_hash,
                     screen_type=frame.screen_type.value if frame.screen_type else None,
                     width=frame.width,
@@ -420,7 +425,9 @@ def get_frame_metadata(
     return FrameMetadataResponse(
         instance_id=instance_id,
         has_frame=True,
-        frame_id=frame.id,
+        # Report the LLSS-namespace id so LLSS recognizes its cached frame and
+        # returns NOOP instead of re-pulling every poll (see _check_hlss_for_new_frame).
+        frame_id=frame.llss_frame_id or frame.id,
         frame_hash=frame.image_hash,
         screen_type=frame.screen_type.value if frame.screen_type else None,
         width=frame.width,
@@ -555,8 +562,23 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
             if account:
                 username = account.username
 
+        challenge = None
+        if instance.linked_account_id:
+            challenge = (
+                db.query(LichessChallenge)
+                .filter(LichessChallenge.account_id == instance.linked_account_id)
+                .order_by(LichessChallenge.created_at)
+                .first()
+            )
+
+        from hlss.services.new_match_state import (
+            ai_adversary_label,
+            ai_level_from_id,
+        )
+
         selected_color = "random"
-        selected_adversary = "Unknown"
+        # Default selection is the first option (Stockfish nível 1) until cycled.
+        selected_adversary = ai_adversary_label(1)
         if instance.new_match_state:
             try:
                 data = json.loads(instance.new_match_state)
@@ -567,33 +589,82 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                         if color in ["random", "white", "black"]:
                             selected_color = color
                         if adversary_id := new_match.get("adversary_id"):
-                            # Lookup adversary username
-                            from hlss.models import Adversary
+                            ai_level = ai_level_from_id(adversary_id)
+                            if ai_level is not None:
+                                selected_adversary = ai_adversary_label(ai_level)
+                            else:
+                                from hlss.models import Adversary
 
-                            adversary = db.get(Adversary, adversary_id)
-                            if adversary:
-                                selected_adversary = adversary.lichess_username
+                                adversary = db.get(Adversary, adversary_id)
+                                if adversary:
+                                    selected_adversary = (
+                                        adversary.friendly_name
+                                        or adversary.lichess_username
+                                    )
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
-        image_data = renderer.render_new_match_screen(
-            username=username,
-            selected_adversary=selected_adversary,
-            selected_color=selected_color,
-            button_actions=[
-                "◀ Adversário",
-                " ",
-                "◀ Cor",
-                " ",
-                " ",
-                " ",
-                "Cor ▶",
-                "▶ Adversário",
-                " ",
-                "ENTER",
-                "X",
-            ],
-        )
+        color_labels = {"white": "Brancas", "black": "Pretas", "random": "Sorteio"}
+        selected_color_label = color_labels.get(selected_color, selected_color)
+
+        if challenge:
+            challenger_name = challenge.challenger_username or "Desconhecido"
+            if challenge.challenger_title:
+                challenger_name = f"{challenge.challenger_title} {challenger_name}"
+
+            tc_label = ""
+            if challenge.time_control_type == "clock":
+                if challenge.time_control_limit is not None:
+                    minutes = max(1, challenge.time_control_limit // 60)
+                    inc = challenge.time_control_increment or 0
+                    tc_label = f"{minutes}+{inc}"
+            elif challenge.time_control_type == "correspondence":
+                if challenge.time_control_days:
+                    tc_label = f"{challenge.time_control_days}d"
+
+            details = []
+            if challenge.variant:
+                details.append(challenge.variant)
+            if challenge.speed:
+                details.append(challenge.speed)
+            if tc_label:
+                details.append(tc_label)
+            details.append("Ranqueado" if challenge.rated else "Amistoso")
+
+            card_sub = " • ".join(details)
+
+            image_data = renderer.render_new_match_screen(
+                mode="incoming",
+                card_title="Desafio recebido",
+                card_main=challenger_name,
+                card_sub=card_sub,
+                primary_action="Aceitar",
+                secondary_action="Recusar",
+                helper_text="ENTER aceita • ESC recusa",
+                button_labels=[" "] * 8 + ["ENTER", "ESC"],
+            )
+        else:
+            image_data = renderer.render_new_match_screen(
+                mode="empty",
+                card_title="Novo jogo",
+                card_main=selected_adversary,
+                card_sub=f"Cor: {selected_color_label}  •  {username}",
+                primary_action="",
+                secondary_action="",
+                helper_text="< > escolhem adversário e cor  •  Criar = botão 5 / ENTER",
+                button_labels=[
+                    "< Adv",
+                    " ",
+                    "< Cor",
+                    " ",
+                    "Criar",
+                    "Cor >",
+                    " ",
+                    "Adv >",
+                    "ENTER",
+                    "ESC",
+                ],
+            )
     elif instance.current_screen == ScreenType.PLAY:
         # Render play screen - requires game state
         if instance.current_game_id:

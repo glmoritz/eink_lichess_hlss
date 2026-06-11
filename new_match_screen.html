@@ -2,171 +2,195 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>New Game – eInk Mockup</title>
+<title>Game Hub – eInk</title>
+
 <style>
-  :root {
-    --white: #ffffff;
-    --light-gray: #d5d5d5;
-    --dark-gray: #555555;
-    --black: #000000;
-  }
+:root {
+  --white: #ffffff;
+  --light-gray: #d5d5d5;
+  --dark-gray: #555555;
+  --black: #000000;
+}
 
-  body {
-    background: #999;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100vh;
-    margin: 0;
-    font-family: "Inter", "DejaVu Sans", sans-serif;
-  }
+body {
+  background: #999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+  font-family: "Inter", "DejaVu Sans", sans-serif;
+}
 
-  .screen {
-    width: 800px;
-    height: 480px;
-    background: var(--white);
-    border: 4px solid var(--dark-gray);
-    box-sizing: border-box;
-    position: relative;
-  }
+.screen {
+  width: 800px;
+  height: 480px;
+  background: var(--white);
+  border: 4px solid var(--dark-gray);
+  box-sizing: border-box;
+  position: relative;
+}
 
-  /* ─────────── TOP BAR ─────────── */
+/* ─────────── TOP BAR ─────────── */
 
-  .top-bar {
-    height: 56px;
-    background: var(--light-gray);
-    border-bottom: 2px solid var(--dark-gray);
-    display: flex;
-    align-items: center;
-    padding: 0 12px;
-    box-sizing: border-box;
-  }
+.top-bar {
+  height: 56px;
+  background: var(--light-gray);
+  border-bottom: 2px solid var(--dark-gray);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+}
 
-  .hl {
-    width: 140px;
-    color: var(--black);
-    font-size: 16px;
-  }
+.hl {
+  width: 140px;
+  font-size: 16px;
+}
 
-  .hl span {
-    margin-right: 10px;
-  }
+.hl span {
+  margin-right: 10px;
+}
 
-  .title {
-    flex: 1;
-    text-align: center;
-    font-size: 28px;
-    font-weight: 600;
-    color: var(--black);
-  }
+.title {
+  flex: 1;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 600;
+}
 
-  .top-actions {
-    width: 180px;
-    text-align: right;
-  }
+.top-actions {
+  width: 180px;
+  text-align: right;
+}
 
-  .action-btn {
-    display: inline-block;
-    padding: 6px 14px;
-    margin-left: 8px;
-    background: var(--dark-gray);
-    color: var(--white);
-    border-radius: 8px;
-    font-size: 16px;
-  }
+.action-btn {
+  display: inline-block;
+  padding: 6px 14px;
+  margin-left: 8px;
+  background: var(--dark-gray);
+  color: var(--white);
+  border-radius: 8px;
+  font-size: 16px;
+}
 
-  /* ─────────── CONTENT ─────────── */
+/* ─────────── CONTENT ─────────── */
 
-  .content {
-    position: absolute;
-    top: 56px;
-    bottom: 112px;
-    width: 100%;
-  }
+.content {
+  position: absolute;
+  top: 56px;
+  bottom: 112px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
-  .card {
-    width: 480px;
-    height: 88px;
-    margin: 24px auto;
-    background: var(--white);
-    border: 2px solid var(--dark-gray);
-    border-radius: 18px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-  }
+/* ─────────── CARD (shared component) ─────────── */
 
-  .card .main {
-    font-size: 30px;
-    font-weight: 600;
-    color: var(--black);
-  }
+.card {
+  position: relative;
+  width: 560px;
+  padding: 26px 22px 22px;
+  border: 2px solid var(--dark-gray);
+  border-radius: 20px;
+  box-sizing: border-box;
+}
 
-  .card .sub {
-    font-size: 15px;
-    color: var(--dark-gray);
-  }
+.card-title {
+  position: absolute;
+  top: -11px;
+  left: 18px;
+  padding: 0 10px;
+  background: var(--white);
+  font-size: 14px;
+  color: var(--dark-gray);
+}
 
-  .arches {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-  }
+.card-main {
+  text-align: center;
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--black);
+  margin-bottom: 10px;
+}
 
-  svg {
-    width: 100%;
-    height: 100%;
-  }
+.card-sub {
+  text-align: center;
+  font-size: 16px;
+  color: var(--dark-gray);
+  margin-bottom: 22px;
+}
 
-  /* ─────────── BOTTOM BAR ─────────── */
+/* ─────────── ACTIONS ─────────── */
 
-  .bottom-bar {
-    position: absolute;
-    bottom: 0;
-    height: 50px;
-    width: 100%;
-    background: var(--light-gray);
-    border-top: 2px solid var(--dark-gray);
-    display: grid;
-    grid-template-columns: repeat(8, 1fr);
-  }
+.card-actions {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+}
 
-  .soft-btn {
-    border-left: 1px solid var(--dark-gray);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    font-size: 15px;
-    color: var(--black);
-  }
+.action {
+  min-width: 160px;
+  padding: 10px 0;
+  text-align: center;
+  border: 2px solid var(--dark-gray);
+  border-radius: 14px;
+  font-size: 18px;
+  box-sizing: border-box;
+}
 
-  .soft-btn.inactive {
-    color: var(--dark-gray);
-  }
+.action.primary {
+  box-shadow: inset 0 0 0 3px var(--dark-gray);
+}
 
-  .helper {
-    position: absolute;
-    bottom: 118px;
-    width: 100%;
-    text-align: center;
-    font-size: 14px;
-    color: var(--dark-gray);
-  }
+/* ─────────── HELPER ─────────── */
+
+.helper {
+  position: absolute;
+  bottom: 118px;
+  width: 100%;
+  text-align: center;
+  font-size: 14px;
+  color: var(--dark-gray);
+}
+
+/* ─────────── BOTTOM BAR ─────────── */
+
+.bottom-bar {
+  position: absolute;
+  bottom: 0;
+  height: 50px;
+  width: 100%;
+  background: var(--light-gray);
+  border-top: 2px solid var(--dark-gray);
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.soft-btn {
+  border-left: 1px solid var(--dark-gray);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 15px;
+}
+
+.soft-btn.inactive {
+  color: var(--dark-gray);
+}
 </style>
 </head>
+
 <body>
 
-<div class="screen">
+<div class="screen" data-mode="@@MODE@@">
 
   <!-- TOP BAR -->
   <div class="top-bar">
     <div class="hl">
-      <span>◀</span>
-      <span>▶</span>
+      <span>◀</span><span>▶</span>
     </div>
-    <div class="title">Criar Jogo</div>
+    <div class="title">Jogo</div>
     <div class="top-actions">
       <span class="action-btn">@@B9@@</span>
       <span class="action-btn">@@B10@@</span>
@@ -175,37 +199,39 @@
 
   <!-- CONTENT -->
   <div class="content">
-    <div class="card" style="margin-top: 32px;">
-      <div class="sub">Adversário</div>      
-      <div class="main">@@ADVERSARY@@</div>      
-    </div>
 
+    <!-- SINGLE ADAPTIVE CARD -->
     <div class="card">
-      <div class="sub">@@PLAYERNAME@@ joga de</div>
-      <div class="main">♔ @@PLAYERCOLOR@@</div>      
+
+      <div class="card-title">@@CARD_TITLE@@</div>
+
+      <div class="card-main">@@CARD_MAIN@@</div>
+      <div class="card-sub">@@CARD_SUB@@</div>
+
+      <div class="card-actions">
+        <div class="action primary">@@PRIMARY_ACTION@@</div>
+        <div class="action">@@SECONDARY_ACTION@@</div>
+      </div>
+
     </div>
 
-    <!-- Arches -->
-    <div class="arches">
-      <svg>
-        
-      </svg>
-    </div>
   </div>
 
   <div class="helper">@@HELPER_TEXT@@</div>
 
   <!-- BOTTOM BAR -->
   <div class="bottom-bar">
-    <div class="soft-btn">@@B1@@</div>
-    <div class="soft-btn">@@B2@@</div>
-    <div class="soft-btn">@@B3@@</div>
+    <div class="soft-btn inactive">@@B1@@</div>
+    <div class="soft-btn inactive">@@B2@@</div>
+    <div class="soft-btn inactive">@@B3@@</div>
     <div class="soft-btn">@@B4@@</div>
     <div class="soft-btn">@@B5@@</div>
-    <div class="soft-btn">@@B6@@</div>
-    <div class="soft-btn">@@B7@@</div>
-    <div class="soft-btn">@@B8@@</div>
+    <div class="soft-btn inactive">@@B6@@</div>
+    <div class="soft-btn inactive">@@B7@@</div>
+    <div class="soft-btn inactive">@@B8@@</div>
   </div>
+
 </div>
+
 </body>
 </html>

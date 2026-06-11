@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     default_display_height: int = 480
     default_display_bit_depth: int = 1
 
+    # Rendering backend selection.
+    #   auto   - use the self-contained PIL renderer where a screen supports it,
+    #            otherwise fall back to the legacy HTML/Chrome (Playwright) path.
+    #   pil    - force the PIL renderer (errors if a screen isn't ported).
+    #   chrome - force the legacy HTML/Chrome path.
+    renderer_backend: Literal["auto", "pil", "chrome"] = "auto"
+
     @property
     def is_development(self) -> bool:
         return self.app_env == "development"

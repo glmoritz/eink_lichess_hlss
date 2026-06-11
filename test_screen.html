@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Play Game - eInk Mockup</title>
+
+<style>
+:root {
+  --white: #ffffff;
+  --light-gray: #d5d5d5;
+  --dark-gray: #555555;
+  --black: #000000;
+}
+
+body {
+  background: #999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+  font-family: "Inter", "DejaVu Sans", sans-serif;
+}
+
+.screen {
+  width: 800px;
+  height: 480px;
+  background: var(--white);
+  border: 4px solid var(--dark-gray);
+  box-sizing: border-box;
+  position: relative;
+}
+
+/* ─────────── TOP BAR ─────────── */
+
+.top-bar {
+  height: 56px;
+  background: var(--light-gray);
+  border-bottom: 2px solid var(--dark-gray);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+
+.hl {
+  width: 140px;
+  font-size: 16px;
+}
+
+.hl span {
+  margin-right: 10px;
+}
+
+.title {
+  flex: 1;
+  text-align: center;
+  font-size: 26px;
+  font-weight: 600;
+}
+
+.top-actions {
+  width: 180px;
+  text-align: right;
+}
+
+.action-btn {
+  display: inline-block;
+  padding: 6px 14px;
+  margin-left: 8px;
+  background: var(--dark-gray);
+  color: var(--white);
+  border-radius: 8px;
+  font-size: 16px;
+}
+
+/* ─────────── PLAY AREA ─────────── */
+
+.play-area {
+  position: absolute;
+  top: 56px;
+  bottom: 112px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  box-sizing: border-box;
+}
+
+/* ─────────── BOARD (FIXED, SAFE) ─────────── */
+
+.board-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.chess-frame {
+  display: inline-block;
+  font-family: monospace;
+  color: var(--black);
+}
+
+/* files */
+.files {
+  display: grid;
+  grid-template-columns: 18px repeat(8, 1fr) 18px;
+  font-size: 10px;
+  text-align: center;
+  line-height: 14px;
+}
+
+/* board + ranks */
+.board-row {
+  display: flex;
+  border: 3px solid var(--dark-gray);
+}
+
+/* ranks */
+.ranks {
+  width: 18px;
+  display: grid;
+  grid-template-rows: repeat(8, 1fr);
+  font-size: 10px;
+}
+
+.ranks span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* board defines the size */
+.board {
+  width: 320px;
+  height: 320px;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+}
+
+.square {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+}
+
+.square.light { background: #f5f5f5; }
+.square.dark  { background: #bcbcbc; }
+
+/* ─────────── SIDE PANEL ─────────── */
+
+.side-panel {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.player-card {
+  border: 2px solid var(--dark-gray);
+  border-radius: 14px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.player-name {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.captured {
+  font-size: 16px;
+  margin-top: 4px;
+  letter-spacing: 2px;
+}
+
+/* ─────────── MOVE LIST ─────────── */
+
+.moves {
+  flex: 1;
+  border: 2px solid var(--dark-gray);
+  border-radius: 14px;
+  padding: 8px;
+  margin: 8px 0;
+}
+
+.move {
+  font-size: 15px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.move .num {
+  width: 24px;
+  color: var(--dark-gray);
+}
+
+.move .w,
+.move .b {
+  width: 80px;
+}
+
+/* ─────────── MOVE PREVIEW ─────────── */
+
+.move-preview {
+  text-align: center;
+  font-size: 22px;
+  font-weight: 600;
+  padding: 6px;
+  border: 2px dashed var(--dark-gray);
+  border-radius: 12px;
+}
+
+/* ─────────── HELPER ─────────── */
+
+.play-helper {
+  position: absolute;
+  bottom: calc(50px + 3px);
+  width: 100%;
+  text-align: center;
+  font-size: 14px;
+  color: var(--dark-gray);
+}
+
+/* ─────────── BOTTOM BAR ─────────── */
+
+.bottom-bar {
+  position: absolute;
+  bottom: 0;
+  height: 50px;
+  width: 100%;
+  background: var(--light-gray);
+  border-top: 2px solid var(--dark-gray);
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.soft-btn {
+  border-left: 1px solid var(--dark-gray);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 14px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="screen">
+
+  <div class="top-bar">
+    <div class="hl"><span>◀</span><span>▶</span></div>
+    <div class="title">@@TITLE@@</div>
+    <div class="top-actions">
+      <span class="action-btn">@@B9@@</span>
+      <span class="action-btn">@@B10@@</span>
+    </div>
+  </div>
+
+  <div class="play-area">
+
+    <!-- BOARD -->
+    <div class="board-wrapper">
+      <div class="chess-frame">
+
+        <div class="files">
+          <span></span>
+          <span>a</span><span>b</span><span>c</span><span>d</span>
+          <span>e</span><span>f</span><span>g</span><span>h</span>
+          <span></span>
+        </div>
+
+        <div class="board-row">
+
+          <div class="ranks">
+            <span>8</span><span>7</span><span>6</span><span>5</span>
+            <span>4</span><span>3</span><span>2</span><span>1</span>
+          </div>
+
+          <div class="board">
+            <!-- ORIGINAL 64 SQUARES (UNCHANGED) -->
+            <div class="square dark">♜</div><div class="square light">♞</div><div class="square dark">♝</div><div class="square light">♛</div>
+            <div class="square dark">♚</div><div class="square light">♝</div><div class="square dark">♞</div><div class="square light">♜</div>
+
+            <div class="square light">♟</div><div class="square dark">♟</div><div class="square light">♟</div><div class="square dark">♟</div>
+            <div class="square light">♟</div><div class="square dark">♟</div><div class="square light">♟</div><div class="square dark">♟</div>
+
+            <div class="square dark"></div><div class="square light"></div><div class="square dark"></div><div class="square light"></div>
+            <div class="square dark"></div><div class="square light"></div><div class="square dark"></div><div class="square light"></div>
+
+            <div class="square light"></div><div class="square dark"></div><div class="square light"></div><div class="square dark"></div>
+            <div class="square light"></div><div class="square dark"></div><div class="square light"></div><div class="square dark"></div>
+
+            <div class="square dark"></div><div class="square light"></div><div class="square dark"></div><div class="square light"></div>
+            <div class="square dark"></div><div class="square light"></div><div class="square dark"></div><div class="square light"></div>
+
+            <div class="square light"></div><div class="square dark"></div><div class="square light"></div><div class="square dark"></div>
+            <div class="square light"></div><div class="square dark"></div><div class="square light"></div><div class="square dark"></div>
+
+            <div class="square dark">♙</div><div class="square light">♙</div><div class="square dark">♙</div><div class="square light">♙</div>
+            <div class="square dark">♙</div><div class="square light">♙</div><div class="square dark">♙</div><div class="square light">♙</div>
+
+            <div class="square light">♖</div><div class="square dark">♘</div><div class="square light">♗</div><div class="square dark">♕</div>
+            <div class="square light">♔</div><div class="square dark">♗</div><div class="square light">♘</div><div class="square dark">♖</div>
+          </div>
+
+          <div class="ranks">
+            <span>8</span><span>7</span><span>6</span><span>5</span>
+            <span>4</span><span>3</span><span>2</span><span>1</span>
+          </div>
+
+        </div>
+
+        <div class="files">
+          <span></span>
+          <span>a</span><span>b</span><span>c</span><span>d</span>
+          <span>e</span><span>f</span><span>g</span><span>h</span>
+          <span></span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- SIDE PANEL -->
+    <div class="side-panel">
+      <div class="player-card">
+        <div class="player-name">@@ADVERSARY@@</div>
+        <div class="captured">@@ADVERSARY_CAPTURED@@</div>
+      </div>
+
+      <div class="moves">@@MOVES@@</div>
+
+      <div class="player-card">
+        <div class="player-name">@@USER@@</div>
+        <div class="captured">@@USER_CAPTURED@@</div>
+      </div>
+
+      <div class="move-preview">@@MOVE_PREVIEW@@</div>
+    </div>
+
+  </div>
+
+  <div class="play-helper">@@HELPER_TEXT@@</div>
+
+  <div class="bottom-bar">
+    <div class="soft-btn">@@B1@@</div>
+    <div class="soft-btn">@@B2@@</div>
+    <div class="soft-btn">@@B3@@</div>
+    <div class="soft-btn">@@B4@@</div>
+    <div class="soft-btn">@@B5@@</div>
+    <div class="soft-btn">@@B6@@</div>
+    <div class="soft-btn">@@B7@@</div>
+    <div class="soft-btn">@@B8@@</div>
+  </div>
+
+</div>
+</body>
+</html>

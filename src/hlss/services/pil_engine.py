@@ -1,0 +1,713 @@
+"""
+Self-contained, color-aware 1bpp renderer (no HTML, no headless Chrome).
+
+Design goals (for a 1bpp mono e-ink panel):
+- Output is **pure black/white** (only 0 and 255). The downstream LLSS converter
+  Floyd-Steinberg dithers, but FS is a no-op on already-binary pixels, so a pure
+  B/W frame survives untouched -> crisp.
+- Grays (chess dark squares, panel fills) are rendered as **ordered dot-mesh**
+  (Bayer 8x8) directly in B/W, never as flat gray that a threshold would crush.
+- Text and chess pieces are drawn normally on an L (8-bit) canvas and the WHOLE
+  canvas is **thresholded once at the end** -> text edges become crisp B/W (no AA
+  gray fringe) and the dot-mesh regions (already 0/255) pass through unchanged.
+  This is why small fonts and pieces stay sharp: nothing is ever dithered.
+
+Pieces come from python-chess SVGs rasterized once via cairosvg and cached.
+
+Keep output a single-channel PNG; LLSS turns it into the packed 1bpp framebuffer.
+"""
+
+from __future__ import annotations
+
+import functools
+import io
+from pathlib import Path
+from typing import Optional
+
+import cairosvg
+import chess
+import chess.svg
+from PIL import Image, ImageDraw, ImageFont
+
+WHITE = 255
+BLACK = 0
+
+# Standard Bayer 8x8 ordered-dither matrix (values 0..63).
+_BAYER8 = [
+    [0, 32, 8, 40, 2, 34, 10, 42],
+    [48, 16, 56, 24, 50, 18, 58, 26],
+    [12, 44, 4, 36, 14, 46, 6, 38],
+    [60, 28, 52, 20, 62, 30, 54, 22],
+    [3, 35, 11, 43, 1, 33, 9, 41],
+    [51, 19, 59, 27, 49, 17, 57, 25],
+    [15, 47, 7, 39, 13, 45, 5, 37],
+    [63, 31, 55, 23, 61, 29, 53, 21],
+]
+# Per-cell threshold in 0..255 (a pixel of value v is white where v > threshold).
+_BAYER_THRESH = [[(c + 0.5) / 64.0 * 255.0 for c in row] for row in _BAYER8]
+
+_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+]
+_FONT_BOLD_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+]
+
+# ---- PLAY screen: Chess Player 2150 sprites + classic-Mac fonts ----
+_ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "cp2150"
+_CHICAGO = _ASSET_DIR / "ChicagoFLF.ttf"
+_GENEVA15 = _ASSET_DIR / "Geneva_15.dfont"
+_GENEVA12 = _ASSET_DIR / "Geneva_12.dfont"
+# python-chess symbol (upper=white / lower=black) -> sprite filename.
+# The *2 set is bg-removed + trimmed (clean alpha, uniform ~48x76 footprint).
+_SYM2FILE = {
+    "P": "white_pawn2", "N": "white_knight2", "B": "white_bishop2",
+    "R": "white_rook2", "Q": "white_queen2", "K": "white_king2",
+    "p": "black_pawn2", "n": "black_knight2", "b": "black_bishop2",
+    "r": "black_rook2", "q": "black_queen2", "k": "black_king2",
+}
+# captured-piece Unicode glyph offsets (white base U+2654, black base U+265A)
+_GORD = {"K": 0, "Q": 1, "R": 2, "B": 3, "N": 4, "P": 5}
+
+
+class PilEngine:
+    """Color-aware 1bpp primitives + screen renderers."""
+
+    HEADER_H = 50
+    FOOTER_H = 50
+    MARGIN = 10
+
+    def __init__(self, width: int = 800, height: int = 480):
+        self.width = width
+        self.height = height
+        self._load_fonts()
+        self._cp_cache: dict[str, tuple] = {}
+        self._init_board_geometry()
+
+    # ---- fonts ----------------------------------------------------------
+    def _pick_font(self, paths: list[str], size: int) -> ImageFont.FreeTypeFont:
+        for p in paths:
+            if Path(p).exists():
+                try:
+                    return ImageFont.truetype(p, size)
+                except OSError:
+                    continue
+        return ImageFont.load_default()
+
+    def _load_fonts(self) -> None:
+        self.f_tiny = self._pick_font(_FONT_PATHS, 12)
+        self.f_small = self._pick_font(_FONT_PATHS, 15)
+        self.f = self._pick_font(_FONT_PATHS, 18)
+        self.f_large = self._pick_font(_FONT_BOLD_PATHS, 26)
+        self.f_huge = self._pick_font(_FONT_BOLD_PATHS, 34)
+        self.f_label = self._pick_font(_FONT_BOLD_PATHS, 14)
+        # classic-Mac fonts for the PLAY screen (fall back to DejaVu if missing)
+        self.f_mac_title = self._pick_font([str(_CHICAGO)] + _FONT_BOLD_PATHS, 20)
+        self.f_mac = self._pick_font([str(_GENEVA15)] + _FONT_PATHS, 15)
+        self.f_mac_small = self._pick_font([str(_GENEVA12)] + _FONT_PATHS, 12)
+        self.f_glyph = self._pick_font(_FONT_PATHS, 16)   # DejaVu has chess glyphs
+
+    # ---- canvas / finalize ---------------------------------------------
+    def _canvas(self) -> Image.Image:
+        """White 8-bit (L) working canvas."""
+        return Image.new("L", (self.width, self.height), WHITE)
+
+    @staticmethod
+    def finalize(img: Image.Image) -> bytes:
+        """Threshold the L canvas to pure B/W and return PNG bytes.
+
+        Threshold at 128: dot-mesh regions are already 0/255 (unchanged); AA text
+        and piece edges snap to the nearest of black/white -> crisp, no gray.
+        """
+        bw = img.point(lambda v: 255 if v >= 128 else 0, mode="L")
+        buf = io.BytesIO()
+        # mode "1" keeps the PNG tiny and unambiguously binary.
+        bw.convert("1").save(buf, format="PNG")
+        return buf.getvalue()
+
+    # ---- ordered dot-mesh grays ----------------------------------------
+    @functools.lru_cache(maxsize=16)
+    def _mesh_field(self, level: int) -> Image.Image:
+        """Full-canvas L image filled with a Bayer dot-mesh approximating `level`.
+
+        level: 0 (solid black) .. 255 (solid white). Cached per level.
+        """
+        w, h = self.width, self.height
+        data = bytearray(w * h)
+        thr = _BAYER_THRESH
+        i = 0
+        for y in range(h):
+            row = thr[y & 7]
+            for x in range(w):
+                data[i] = WHITE if level > row[x & 7] else BLACK
+                i += 1
+        field = Image.frombytes("L", (w, h), bytes(data))
+        return field
+
+    def mesh_fill(self, img: Image.Image, box: tuple[int, int, int, int], level: int) -> None:
+        """Fill `box` (x0,y0,x1,y1) of `img` with a dot-mesh of the given gray level.
+
+        The mesh is aligned to the global pixel grid so adjacent fills tile
+        seamlessly. level 255 == leave white (skip).
+        """
+        if level >= 255:
+            return
+        x0, y0, x1, y1 = box
+        x0i, y0i, x1i, y1i = int(x0), int(y0), int(x1), int(y1)
+        if x1i <= x0i or y1i <= y0i:
+            return
+        field = self._mesh_field(level)
+        img.paste(field.crop((x0i, y0i, x1i, y1i)), (x0i, y0i))
+
+    # ---- chess piece bitmaps (cairosvg, cached) ------------------------
+    @functools.lru_cache(maxsize=64)
+    def _piece_rgba(self, symbol: str, size: int) -> Image.Image:
+        """Rasterize a piece SVG to an RGBA PIL image of `size` px (cached).
+
+        `symbol` is python-chess piece symbol: uppercase=white, lowercase=black.
+        Standard chess.svg pieces are black-outlined with white fill, so they
+        read on both white and dot-mesh-dark squares.
+        """
+        piece = chess.Piece.from_symbol(symbol)
+        svg = chess.svg.piece(piece)
+        png = cairosvg.svg2png(bytestring=svg.encode("utf-8"),
+                               output_width=size, output_height=size)
+        return Image.open(io.BytesIO(png)).convert("RGBA")
+
+    def paste_piece(self, img: Image.Image, symbol: str,
+                    box: tuple[int, int, int, int], scale: float = 1.0) -> None:
+        """Center a piece glyph in `box` on the L canvas, composited via alpha.
+
+        Transparent areas let the underlying square (mesh or white) show through;
+        the piece's white fill occludes the mesh so the glyph stays legible.
+        """
+        x0, y0, x1, y1 = box
+        side = int(min(x1 - x0, y1 - y0) * scale)
+        if side <= 0:
+            return
+        rgba = self._piece_rgba(symbol, side)
+        # Convert piece luminance to L; use alpha as paste mask.
+        gray = rgba.convert("L")
+        alpha = rgba.split()[3]
+        px = int(x0 + ((x1 - x0) - side) / 2)
+        py = int(y0 + ((y1 - y0) - side) / 2)
+        img.paste(gray, (px, py), alpha)
+
+    # ---- text -----------------------------------------------------------
+    def text(self, draw: ImageDraw.ImageDraw, xy, s: str, font, anchor=None,
+             align="left") -> None:
+        draw.text(xy, s, fill=BLACK, font=font, anchor=anchor, align=align)
+
+    def text_w(self, draw: ImageDraw.ImageDraw, s: str, font) -> int:
+        try:
+            l, t, r, b = draw.textbbox((0, 0), s, font=font)
+            return r - l
+        except Exception:
+            return len(s) * 8
+
+    def text_centered(self, draw: ImageDraw.ImageDraw, cx: int, y: int, s: str, font) -> None:
+        w = self.text_w(draw, s, font)
+        draw.text((cx - w // 2, y), s, fill=BLACK, font=font)
+
+    # ---- chrome-ish UI primitives (mesh + crisp) -----------------------
+    def panel(self, img, draw, box, level=255, outline=True, radius=0):
+        """Filled (mesh) rounded/plain rectangle with an optional black outline."""
+        if level < 255:
+            self.mesh_fill(img, box, level)
+        if outline:
+            if radius > 0:
+                draw.rounded_rectangle(list(box), radius=radius, outline=BLACK)
+            else:
+                draw.rectangle(list(box), outline=BLACK)
+
+    def button(self, img, draw, box, number: Optional[int], label: str,
+               enabled: bool = True, radius: int = 8) -> None:
+        x0, y0, x1, y1 = box
+        # disabled buttons get a faint mesh fill so they read as inactive
+        if not enabled:
+            self.mesh_fill(img, (x0 + 1, y0 + 1, x1 - 1, y1 - 1), 200)
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, outline=BLACK)
+        if number is not None:
+            draw.text((x0 + 6, y0 + 4), str(number), fill=BLACK, font=self.f_tiny)
+        if label and label.strip():
+            self.text_centered(draw, (x0 + x1) // 2, y0 + (y1 - y0) // 2 - 8,
+                                label[:12], self.f_small)
+
+    def header(self, img, draw, title: str) -> None:
+        self.mesh_fill(img, (0, 0, self.width, self.HEADER_H), 210)
+        draw.line([0, self.HEADER_H - 1, self.width, self.HEADER_H - 1], fill=BLACK)
+        self.text_centered(draw, self.width // 2, (self.HEADER_H - 26) // 2, title, self.f_large)
+
+    def footer_buttons(self, img, draw, labels: list[str]) -> None:
+        """Bottom strip of 8 soft-button labels (labels may be shorter)."""
+        top = self.height - self.FOOTER_H
+        self.mesh_fill(img, (0, top, self.width, self.height), 210)
+        draw.line([0, top, self.width, top], fill=BLACK)
+        slot = (self.width - 2 * self.MARGIN) // 8
+        y0 = top + 8
+        y1 = self.height - 8
+        for i in range(8):
+            x0 = self.MARGIN + i * slot
+            x1 = x0 + slot - 6
+            lab = labels[i] if i < len(labels) else ""
+            self.button(img, draw, (x0, y0, x1, y1), i + 1, lab,
+                        enabled=bool(lab and lab.strip()))
+
+    def content_bounds(self) -> tuple[int, int, int, int]:
+        return (self.MARGIN, self.HEADER_H + self.MARGIN,
+                self.width - self.MARGIN, self.height - self.FOOTER_H - self.MARGIN)
+
+    # =====================================================================
+    # Screens
+    # =====================================================================
+    def render_setup_screen(self, config_url: str) -> bytes:
+        import qrcode
+
+        img = self._canvas()
+        draw = ImageDraw.Draw(img)
+        self.header(img, draw, "Setup")
+        self.footer_buttons(img, draw, [""] * 8)
+        left, top, right, bottom = self.content_bounds()
+
+        lines = [
+            "No Lichess account configured.",
+            "",
+            "Scan the QR code or visit:",
+            config_url,
+            "",
+            "to configure your account.",
+        ]
+        y = top + 8
+        for ln in lines:
+            draw.text((left, y), ln, fill=BLACK, font=self.f)
+            y += 24
+
+        qr = qrcode.QRCode(version=1,
+                           error_correction=qrcode.constants.ERROR_CORRECT_L,
+                           box_size=6, border=2)
+        qr.add_data(config_url)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert("L")
+        qx = right - qr_img.width
+        qy = top + (bottom - top - qr_img.height) // 2
+        img.paste(qr_img, (qx, qy))
+        return self.finalize(img)
+
+    # ---- SAN / glyph-aware labels --------------------------------------
+    _PIECE_LETTERS = set("KQRBNP")
+
+    def _glyph_symbol(self, letter: str, white: bool) -> str:
+        return letter.upper() if white else letter.lower()
+
+    def draw_san(self, img, draw, x: int, y: int, san: str, white: bool,
+                 font, glyph_px: int) -> int:
+        """Draw a SAN-ish string starting at (x, top=y). If it begins with a
+        piece letter (KQRBN) draw that piece glyph, then the rest as text.
+        Returns the total advanced width."""
+        if not san:
+            return 0
+        cx = x
+        rest = san
+        if san[0] in self._PIECE_LETTERS and not san.startswith("O-O"):
+            sym = self._glyph_symbol(san[0], white)
+            self.paste_piece(img, sym, (cx, y, cx + glyph_px, y + glyph_px))
+            cx += glyph_px
+            rest = san[1:]
+        if rest:
+            # vertically center text against the glyph box
+            ty = y + max(0, (glyph_px - font.size) // 2)
+            draw.text((cx, ty), rest, fill=BLACK, font=font)
+            cx += self.text_w(draw, rest, font)
+        return cx - x
+
+    def san_width(self, draw, san: str, font, glyph_px: int) -> int:
+        if not san:
+            return 0
+        w = 0
+        rest = san
+        if san[0] in self._PIECE_LETTERS and not san.startswith("O-O"):
+            w += glyph_px
+            rest = san[1:]
+        if rest:
+            w += self.text_w(draw, rest, font)
+        return w
+
+    def draw_san_centered(self, img, draw, cx: int, y: int, san: str, white: bool,
+                          font, glyph_px: int) -> None:
+        w = self.san_width(draw, san, font, glyph_px)
+        self.draw_san(img, draw, cx - w // 2, y, san, white, font, glyph_px)
+
+    # ---- PLAY screen ----------------------------------------------------
+    # ---- board geometry: parameterised one-point perspective ------------
+    def _init_board_geometry(self) -> None:
+        """Chessmaster-2000-style projection. All five constants are tunable;
+        keeping it a function (not baked coords) makes the look easy to retune."""
+        self.CX = 382          # board centre x
+        self.Y_FAR = 132       # far (rank-8 / top) surface edge
+        self.Y_NEAR = 398      # near (rank-1 / front) surface edge
+        self.W_FAR = 356       # far-edge width  (wider -> gentler tilt)
+        self.W_NEAR = 632      # near-edge width
+        self.ROW_RATIO = 1.07  # rank foreshortening (front ranks taller)
+        self.SIDE_H = 14       # 3D front-lip thickness
+        self.PIECE_LIFT = 6    # piece base sits this far below square centre
+        hs = [self.ROW_RATIO ** i for i in range(8)]   # dr 0 far(small)..7 near
+        scale = (self.Y_NEAR - self.Y_FAR) / sum(hs)
+        ys, acc = [self.Y_FAR], self.Y_FAR
+        for h in hs:
+            acc += h * scale
+            ys.append(acc)
+        self._row_ys = ys
+
+    def _edges_at(self, y):
+        s = (y - self.Y_FAR) / (self.Y_NEAR - self.Y_FAR)
+        half = (self.W_FAR + (self.W_NEAR - self.W_FAR) * s) / 2.0
+        return self.CX - half, self.CX + half
+
+    def _sq_quad(self, dc, dr):
+        yt, yb = self._row_ys[dr], self._row_ys[dr + 1]
+        lt, rt = self._edges_at(yt)
+        lb, rb = self._edges_at(yb)
+        xTL = lt + dc / 8 * (rt - lt); xTR = lt + (dc + 1) / 8 * (rt - lt)
+        xBL = lb + dc / 8 * (rb - lb); xBR = lb + (dc + 1) / 8 * (rb - lb)
+        return [(xTL, yt), (xTR, yt), (xBR, yb), (xBL, yb)]
+
+    def _sq_anchor(self, dc, dr):
+        q = self._sq_quad(dc, dr)
+        cx = sum(p[0] for p in q) / 4.0
+        cy = sum(p[1] for p in q) / 4.0
+        return cx, cy + self.PIECE_LIFT
+
+    @functools.lru_cache(maxsize=1)
+    def _gray_pattern(self) -> Image.Image:
+        """Screen-aligned 50% Mac 'gray' (deterministic checker), pure 0/255."""
+        w, h = self.width, self.height
+        even = bytes(255 if (x & 1) == 0 else 0 for x in range(w))
+        odd = bytes(0 if (x & 1) == 0 else 255 for x in range(w))
+        data = b"".join(even if (y & 1) == 0 else odd for y in range(h))
+        return Image.frombytes("L", (w, h), data)
+
+    # ---- CP2150 piece sprites (never resized) ---------------------------
+    @staticmethod
+    def _alpha_from_bg(im: Image.Image) -> Image.Image:
+        """Derive alpha by flood-filling the border-connected near-white
+        background to transparent, preserving interior white highlights. Safety
+        net for not-yet-cleaned sprites; a no-op on sprites with real alpha."""
+        rgb = im.convert("RGB")
+        w, h = rgb.size
+        marker = (255, 0, 255)
+        seeds = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1),
+                 (w // 2, 0), (w // 2, h - 1), (0, h // 2), (w - 1, h // 2)]
+        for s in seeds:
+            if sum(rgb.getpixel(s)) > 600:
+                ImageDraw.floodfill(rgb, s, marker, thresh=60)
+        px = rgb.load()
+        a = Image.new("L", (w, h), 255)
+        ap = a.load()
+        for y in range(h):
+            for x in range(w):
+                if px[x, y] == marker:
+                    ap[x, y] = 0
+        return a
+
+    def _cp_sprite(self, symbol: str):
+        sp = self._cp_cache.get(symbol)
+        if sp is None:
+            im = Image.open(_ASSET_DIR / (_SYM2FILE[symbol] + ".png")).convert("RGBA")
+            a = im.split()[3]
+            if a.getextrema() == (255, 255):     # opaque -> derive transparency
+                a = self._alpha_from_bg(im)
+            L = im.convert("L")
+            a = a.point(lambda v: 255 if v > 40 else 0)
+            sp = (L, a)
+            self._cp_cache[symbol] = sp
+        return sp
+
+    # ---- Mac chrome helpers ---------------------------------------------
+    def _cap_glyph(self, letter: str, white: bool) -> str:
+        return chr((0x2654 if white else 0x265A) + _GORD[letter])
+
+    def _fit(self, draw, s: str, font, max_w: int) -> str:
+        if self.text_w(draw, s, font) <= max_w:
+            return s
+        while s and self.text_w(draw, s + "…", font) > max_w:
+            s = s[:-1]
+        return s + "…"
+
+    def _mac_box(self, draw, box, shadow=True, width=2) -> None:
+        x0, y0, x1, y1 = box
+        if shadow:
+            draw.rectangle([x0 + 3, y0 + 3, x1 + 3, y1 + 3], fill=BLACK)
+        draw.rectangle([x0, y0, x1, y1], fill=WHITE, outline=BLACK, width=width)
+
+    def _draw_flag(self, draw, x, y) -> None:
+        draw.line([(x, y), (x, y + 16)], fill=BLACK, width=2)
+        draw.polygon([(x + 2, y), (x + 13, y + 4), (x + 2, y + 8)], fill=BLACK)
+
+    def _mac_button(self, draw, box, index: int, label: str) -> None:
+        x0, y0, x1, y1 = box
+        empty = not (label and label.strip())
+        self._mac_box(draw, box, shadow=not empty, width=(1 if empty else 2))
+        draw.text((x0 + 4, y0 + 2), str(index), fill=BLACK, font=self.f_mac_small)
+        if empty:
+            return
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if any(ord(ch) > 0x2000 for ch in label):     # flag / icon glyph
+            self._draw_flag(draw, int(cx - 6), int(cy - 8))
+            return
+        bb = draw.textbbox((0, 0), label, font=self.f_mac)
+        draw.text((cx - (bb[2] - bb[0]) / 2, cy - 4), label, fill=BLACK, font=self.f_mac)
+
+    def _last_san(self, view: dict):
+        san = view.get("last_move_san")
+        if san:
+            return san
+        for _num, w, b in reversed(view.get("moves", [])):
+            if b:
+                return b
+            if w:
+                return w
+        return None
+
+    # =====================================================================
+    # PLAY screen — Chess Player 2150 sprites + Chessmaster perspective board
+    # =====================================================================
+    def render_play(self, view: dict) -> bytes:
+        """Render the chess play screen from a prepared, HTML-agnostic view.
+
+        Vintage-Mac look: a parameterised 3D perspective board (Chessmaster
+        2000), Chess-Player-2150 sprites composited far->near (never resized),
+        classic-Mac framed boxes (Chicago/Geneva) for the opponent card, turn/
+        status strip and move-composition hint, edge coordinates, and an 8-button
+        Mac footer (B1..B8). The top strip mirrors the footer's 8-cell grid: a
+        down-arrow menu trigger (cell 1) + an instruction bar (cells 2..8).
+        Output is pure 1bpp B/W.
+
+        view keys: title, orientation_white, squares[(dc,dr,symbol|None,dark)],
+        last_move[(dc,dr)], loser_king|None, rank_labels[8], file_labels[8],
+        adversary_name, adversary_captured[(LETTER,white)], move_title,
+        move_preview, preview_lines|None, last_move_san(optional),
+        buttons[10] of (label, white, is_move).
+        """
+        img = self._canvas()
+        draw = ImageDraw.Draw(img)
+        gray = self._gray_pattern()
+        sq = {(dc, dr): (sym, dark) for (dc, dr, sym, dark) in view["squares"]}
+
+        # ---- board surface: dark squares dithered, light squares white ----
+        dark_mask = Image.new("1", (self.width, self.height), 0)
+        dm = ImageDraw.Draw(dark_mask)
+        for dr in range(8):
+            for dc in range(8):
+                if sq[(dc, dr)][1]:
+                    dm.polygon([(round(x), round(y)) for x, y in self._sq_quad(dc, dr)],
+                               fill=1)
+        # 3D front lip is dithered too
+        nl, nr = self._edges_at(self.Y_NEAR)
+        lip = [(nl, self.Y_NEAR), (nr, self.Y_NEAR),
+               (nr, self.Y_NEAR + self.SIDE_H), (nl, self.Y_NEAR + self.SIDE_H)]
+        dm.polygon([(round(x), round(y)) for x, y in lip], fill=1)
+        img.paste(gray, (0, 0), dark_mask)
+
+        # ---- grid + outer frame ----
+        for dr in range(9):
+            y = self._row_ys[dr]
+            l, r = self._edges_at(y)
+            draw.line([(l, y), (r, y)], fill=BLACK, width=1)
+        top = self._edges_at(self.Y_FAR); bot = self._edges_at(self.Y_NEAR)
+        for c in range(9):
+            xt = top[0] + c / 8 * (top[1] - top[0])
+            xb = bot[0] + c / 8 * (bot[1] - bot[0])
+            draw.line([(xt, self.Y_FAR), (xb, self.Y_NEAR)], fill=BLACK, width=1)
+        fl, fr = top;
+        draw.line([(fl, self.Y_FAR), (fr, self.Y_FAR)], fill=BLACK, width=3)
+        draw.line([(nl, self.Y_NEAR), (nr, self.Y_NEAR)], fill=BLACK, width=3)
+        draw.line([(fl, self.Y_FAR), (nl, self.Y_NEAR)], fill=BLACK, width=3)
+        draw.line([(fr, self.Y_FAR), (nr, self.Y_NEAR)], fill=BLACK, width=3)
+        draw.polygon([(round(x), round(y)) for x, y in lip], outline=BLACK)
+        draw.line([(nl, self.Y_NEAR + self.SIDE_H), (nr, self.Y_NEAR + self.SIDE_H)],
+                  fill=BLACK, width=2)
+
+        # ---- last-move highlight (before pieces) ----
+        for (dc, dr) in view.get("last_move", []):
+            q = self._sq_quad(dc, dr)
+            draw.polygon([(round(x), round(y)) for x, y in q], outline=BLACK)
+            draw.line([q[0], q[1]], fill=BLACK, width=3)
+            draw.line([q[3], q[2]], fill=BLACK, width=3)
+
+        # ---- pieces, painted far -> near ----
+        for dr in range(8):
+            for dc in range(8):
+                symbol = sq[(dc, dr)][0]
+                if not symbol:
+                    continue
+                L, a = self._cp_sprite(symbol)
+                ax, ay = self._sq_anchor(dc, dr)
+                img.paste(L, (int(round(ax - L.width / 2)), int(round(ay - L.height))), a)
+
+        # ---- loser king X ----
+        lk = view.get("loser_king")
+        if lk:
+            q = self._sq_quad(lk[0], lk[1])
+            draw.line([q[0], q[2]], fill=BLACK, width=4)
+            draw.line([q[1], q[3]], fill=BLACK, width=4)
+
+        # ---- edge coordinates ----
+        rl = view.get("rank_labels", [])
+        fl_lab = view.get("file_labels", [])
+        for dr in range(8):
+            yt, yb = self._row_ys[dr], self._row_ys[dr + 1]
+            l, _ = self._edges_at((yt + yb) / 2)
+            if dr < len(rl):
+                draw.text((l - 16, (yt + yb) / 2 - 7), str(rl[dr]),
+                          fill=BLACK, font=self.f_mac_small)
+        cy = self.Y_NEAR + self.SIDE_H + 2
+        for dc in range(8):
+            if dc < len(fl_lab):
+                q = self._sq_quad(dc, 7)
+                cx = (q[2][0] + q[3][0]) / 2
+                self.text_centered(draw, int(cx), int(cy), str(fl_lab[dc]), self.f_mac_small)
+
+        b = view.get("buttons", [])
+
+        # ---- top strip: 8-cell device-button grid (mirrors the footer) ----
+        self._top_bar(draw, view.get("title", ""))
+
+        # ---- opponent card (left upper triangle) — kept thin so it tucks into
+        # the corner clear of the board's far edge ----
+        self._mac_box(draw, (6, 50, 196, 112))
+        draw.text((12, 54), self._cap_glyph("N", not view.get("orientation_white", True)),
+                  fill=BLACK, font=self.f_glyph)
+        draw.text((34, 55), self._fit(draw, view.get("adversary_name", ""), self.f_mac, 148),
+                  fill=BLACK, font=self.f_mac)
+        cap = "".join(self._cap_glyph(l, w)
+                      for (l, w) in view.get("adversary_captured", [])[:9])
+        draw.text((12, 73), cap or "—", fill=BLACK, font=self.f_glyph)
+        last_san = self._last_san(view)
+        draw.text((12, 93), self._fit(draw, "Últ: " + (last_san or "—"), self.f_mac_small, 176),
+                  fill=BLACK, font=self.f_mac_small)
+
+        # ---- hint card (right upper triangle): move-composition feedback ----
+        self._mac_box(draw, (572, 50, 788, 120))
+        mt = view.get("move_title") or ""
+        if mt:
+            draw.text((580, 54), self._fit(draw, mt, self.f_mac_small, 200),
+                      fill=BLACK, font=self.f_mac_small)
+        plines = view.get("preview_lines")
+        if plines:
+            for i, ln in enumerate(plines[:2]):
+                draw.text((580, 72 + i * 17), self._fit(draw, ln, self.f_mac, 200),
+                          fill=BLACK, font=self.f_mac)
+        else:
+            self.text_centered(draw, 680, 76,
+                               self._fit(draw, view.get("move_preview", "") or "",
+                                         self.f_mac_title, 200), self.f_mac_title)
+
+        # ---- bottom footer: physical buttons B1..B8 ----
+        self._play_footer(draw, b)
+        return self.finalize(img)
+
+    # ---- shared 8-cell device-button grid ------------------------------
+    _BTN_N = 8
+    _BTN_GAP = 6
+
+    def _btn_cell(self, i: int) -> tuple[float, float]:
+        """(x0, x1) of physical-button cell i (0..7) on the 8-cell strip."""
+        bw = (self.width - self._BTN_GAP * (self._BTN_N + 1)) / self._BTN_N
+        x0 = self._BTN_GAP + i * (bw + self._BTN_GAP)
+        return x0, x0 + bw
+
+    def _top_bar(self, draw, title: str, font=None) -> None:
+        """Top strip = one instruction bar spanning the full 8-button width.
+        The top physical buttons are btn9..btn16 (the footer is btn1..btn8),
+        grid-aligned to the footer. The device-local menu is HIDDEN by default
+        (firmware), so the whole strip is ours for content; pressing btn9 pops
+        the menu over the bar's first 4 cells (btn9..btn12). We can't draw the
+        menu, but we leave a small down-chevron affordance at the btn9 position
+        so the user knows the menu lives there. `font` overrides the title face
+        (e.g. Chicago for the new-game screen)."""
+        font = font or self.f_mac
+        y0, y1 = 4, 48
+        bx0, _ = self._btn_cell(0)
+        _, bx1 = self._btn_cell(self._BTN_N - 1)
+        bx0, bx1 = round(bx0), round(bx1)
+        self._mac_box(draw, (bx0, y0, bx1, y1))
+        # menu-trigger hint: down-chevron + separator at the btn9 spot
+        cy = (y0 + y1) // 2
+        hx = bx0 + 16
+        draw.polygon([(hx - 7, cy - 4), (hx + 7, cy - 4), (hx, cy + 5)], fill=BLACK)
+        sep = bx0 + 34
+        draw.line([(sep, y0 + 6), (sep, y1 - 6)], fill=BLACK, width=1)
+        # instruction text fills the rest of the bar
+        tx = sep + 10
+        draw.text((tx, y0 + 13),
+                  self._fit(draw, title, font, bx1 - tx - 12),
+                  fill=BLACK, font=font)
+
+    def _play_footer(self, draw, buttons: list) -> None:
+        """Bottom strip = physical buttons B1..B8 only, as Mac boxes."""
+        y0, y1 = 430, 474
+        for i in range(self._BTN_N):
+            tok = buttons[i] if i < len(buttons) else None
+            label = tok[0] if isinstance(tok, (list, tuple)) and tok else ""
+            x0, x1 = self._btn_cell(i)
+            self._mac_button(draw, (round(x0), y0, round(x1), y1), i + 1, label)
+
+    def render_new_match_screen(self, mode: str, card_title: str, card_main: str,
+                                card_sub: str, primary_action: str,
+                                secondary_action: str, helper_text: str,
+                                button_labels: list[str]) -> bytes:
+        """Vintage-Mac new-game screen: the same chevron-menu top bar + 8-button
+        footer as PLAY, with a centred Mac dialog box showing the current
+        selection (adversary + color). The create action is a real physical
+        button (BTN_5, shown in the footer) — there is no fake on-screen send
+        button. ``mode="incoming"`` shows an accept/decline challenge dialog.
+        Output is pure 1bpp B/W."""
+        img = self._canvas()
+        draw = ImageDraw.Draw(img)
+
+        # top instruction bar (with hidden-menu chevron hint), same as PLAY
+        self._top_bar(draw, card_title or "Novo jogo", font=self.f_mac_title)
+
+        # ---- centred Mac dialog box ----
+        bx0, by0, bx1, by1 = 150, 116, 650, 356
+        self._mac_box(draw, (bx0, by0, bx1, by1), width=2)
+        cxc = (bx0 + bx1) // 2
+        inner = bx1 - bx0 - 48
+
+        # selected adversary (big Chicago) + sub line (Geneva)
+        self.text_centered(draw, cxc, by0 + 30,
+                           self._fit(draw, card_main or "—", self.f_mac_title, inner),
+                           self.f_mac_title)
+        if card_sub and card_sub.strip():
+            self.text_centered(draw, cxc, by0 + 80,
+                               self._fit(draw, card_sub, self.f_mac, inner), self.f_mac)
+
+        # divider
+        draw.line([(bx0 + 24, by0 + 118), (bx1 - 24, by0 + 118)], fill=BLACK, width=1)
+
+        # action hint inside the dialog
+        if primary_action and primary_action.strip():
+            # incoming challenge: accept/decline via ENTER/ESC
+            self.text_centered(draw, cxc, by1 - 86,
+                               "ENTER: " + primary_action, self.f_mac)
+            if secondary_action and secondary_action.strip():
+                self.text_centered(draw, cxc, by1 - 58,
+                                   "ESC: " + secondary_action, self.f_mac)
+        else:
+            # create mode: point at the real button
+            self.text_centered(draw, cxc, by1 - 70,
+                               "Criar jogo:  botao 5  ou  ENTER", self.f_mac)
+
+        if helper_text and helper_text.strip():
+            self.text_centered(draw, self.width // 2, by1 + 18,
+                               self._fit(draw, helper_text, self.f_mac_small, self.width - 40),
+                               self.f_mac_small)
+
+        # ---- 8-button Mac footer (BTN_1..BTN_8) ----
+        tokens = [(lab,) for lab in (button_labels or [])[:8]]
+        self._play_footer(draw, tokens)
+        return self.finalize(img)

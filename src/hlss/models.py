@@ -48,6 +48,11 @@ class LichessAccount(Base):
 
     # Relationships
     games: Mapped[list["Game"]] = relationship("Game", back_populates="account")
+    challenges: Mapped[list["LichessChallenge"]] = relationship(
+        "LichessChallenge",
+        back_populates="account",
+        cascade="all, delete-orphan",
+    )
     adversaries: Mapped[list["Adversary"]] = relationship(
         "Adversary",
         back_populates="account",
@@ -116,6 +121,41 @@ class Game(Base):
     # Relationships
     account: Mapped["LichessAccount"] = relationship("LichessAccount", back_populates="games")
     frames: Mapped[list["Frame"]] = relationship("Frame", back_populates="game")
+
+
+class LichessChallenge(Base):
+    """An incoming Lichess challenge for a linked account."""
+
+    __tablename__ = "lichess_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    lichess_challenge_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    account_id: Mapped[str] = mapped_column(String(36), ForeignKey("lichess.lichess_accounts.id"))
+
+    # Challenge metadata
+    challenger_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    challenger_title: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    rated: Mapped[bool] = mapped_column(Boolean, default=False)
+    color: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    variant: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    speed: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
+    # Time control
+    time_control_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    time_control_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    time_control_increment: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    time_control_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Raw payload for debugging/inspection
+    raw_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    account: Mapped["LichessAccount"] = relationship("LichessAccount", back_populates="challenges")
 
 
 class ScreenType(enum.Enum):

@@ -4,6 +4,7 @@ LLSS (Low Level Screen Service) integration service.
 
 import hashlib
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -11,12 +12,26 @@ from hlss.config import get_settings
 from hlss.security import create_llss_token
 
 
+def _normalize_llss_base_url(base_url: str) -> str:
+    """Ensure LLSS base URLs include the API root exactly once."""
+    normalized = base_url.rstrip("/")
+    parts = urlsplit(normalized)
+    path = parts.path.rstrip("/")
+
+    if not path:
+        path = "/api"
+    elif path != "/api" and not path.endswith("/api"):
+        path = f"{path}/api"
+
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
 class LLSSService:
     """Service for communicating with LLSS."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.settings = get_settings()
-        self.base_url = self.settings.llss_base_url
+        self.base_url = _normalize_llss_base_url(self.settings.llss_base_url)
         self.api_token = self.settings.llss_api_token
 
     def _build_headers(

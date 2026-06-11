@@ -42,6 +42,17 @@ class LichessService:
         """Return the authenticated user\'s followed players (friends)."""
         return list(self.client.relations.get_users_followed())
 
+    def get_challenges(self) -> dict[str, Any]:
+        """Return incoming/outgoing challenges for the authenticated user."""
+        if not self.api_token:
+            return {}
+
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get("https://lichess.org/api/challenge", headers=headers)
+            response.raise_for_status()
+            return response.json()
+
     def get_game_stream(self, game_id: str):
         """
         Stream game updates for real-time position tracking.
@@ -105,6 +116,48 @@ class LichessService:
                 clock_limit=clock_limit,
                 clock_increment=clock_increment or 0,
             )
+
+    def create_ai_challenge(
+        self,
+        level: int = 3,
+        color: str = "random",
+        clock_limit: int | None = None,
+        clock_increment: int | None = None,
+        days: int | None = 3,
+    ) -> dict[str, Any]:
+        """Challenge the Lichess AI (Stockfish). Unlike a human challenge this
+        starts a game immediately and returns the game JSON.
+
+        Args:
+            level: Stockfish level 1-8.
+            color: 'white', 'black', or 'random'.
+            clock_limit / clock_increment: real-time clock (seconds); when
+                omitted the game is correspondence (`days`).
+            days: correspondence time per move (used when no clock is given).
+        """
+        kwargs: dict[str, Any] = {"level": level, "color": color}
+        if clock_limit is None:
+            kwargs["days"] = days
+        else:
+            kwargs["clock_limit"] = clock_limit
+            kwargs["clock_increment"] = clock_increment or 0
+        return self.client.challenges.create_ai(**kwargs)
+
+    def accept_challenge(self, challenge_id: str) -> bool:
+        """Accept an incoming challenge."""
+        try:
+            self.client.challenges.accept(challenge_id)
+            return True
+        except berserk.exceptions.ResponseError:
+            return False
+
+    def decline_challenge(self, challenge_id: str) -> bool:
+        """Decline an incoming challenge."""
+        try:
+            self.client.challenges.decline(challenge_id)
+            return True
+        except berserk.exceptions.ResponseError:
+            return False
 
     def resign_game(self, game_id: str) -> bool:
         """Resign from an ongoing game."""
