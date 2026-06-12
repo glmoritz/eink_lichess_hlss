@@ -269,22 +269,13 @@ class PilEngine:
 
         img = self._canvas()
         draw = ImageDraw.Draw(img)
-        self.header(img, draw, "Setup")
-        self.footer_buttons(img, draw, [""] * 8)
-        left, top, right, bottom = self.content_bounds()
 
-        lines = [
-            "No Lichess account configured.",
-            "",
-            "Scan the QR code or visit:",
-            config_url,
-            "",
-            "to configure your account.",
-        ]
-        y = top + 8
-        for ln in lines:
-            draw.text((left, y), ln, fill=BLACK, font=self.f)
-            y += 24
+        # vintage-Mac chrome, same as PLAY / NEW MATCH
+        self._top_bar(draw, "Configuração", font=self.f_mac_title)
+
+        # one centred Mac dialog: instructions on the left, QR on the right
+        bx0, by0, bx1, by1 = 40, 92, 760, 396
+        self._mac_box(draw, (bx0, by0, bx1, by1), width=2)
 
         qr = qrcode.QRCode(version=1,
                            error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -292,9 +283,27 @@ class PilEngine:
         qr.add_data(config_url)
         qr.make(fit=True)
         qr_img = qr.make_image(fill_color="black", back_color="white").convert("L")
-        qx = right - qr_img.width
-        qy = top + (bottom - top - qr_img.height) // 2
+        qx = bx1 - 28 - qr_img.width
+        qy = by0 + (by1 - by0 - qr_img.height) // 2
         img.paste(qr_img, (qx, qy))
+
+        tx = bx0 + 28
+        ty = by0 + 28
+        draw.text((tx, ty), "Nenhuma conta", fill=BLACK, font=self.f_mac_title)
+        draw.text((tx, ty + 28), "Lichess configurada.", fill=BLACK, font=self.f_mac_title)
+        body = ["Escaneie o QR code ou abra",
+                "o endereço abaixo para",
+                "configurar sua conta:"]
+        yy = ty + 76
+        for ln in body:
+            draw.text((tx, yy), ln, fill=BLACK, font=self.f_mac)
+            yy += 22
+        draw.text((tx, yy + 8),
+                  self._fit(draw, config_url, self.f_mac_small, qx - tx - 16),
+                  fill=BLACK, font=self.f_mac_small)
+
+        # 8-cell Mac footer (all empty: setup has no soft-key actions)
+        self._play_footer(draw, [])
         return self.finalize(img)
 
     # ---- SAN / glyph-aware labels --------------------------------------
@@ -621,14 +630,17 @@ class PilEngine:
         return x0, x0 + bw
 
     def _top_bar(self, draw, title: str, font=None) -> None:
-        """Top strip = one instruction bar spanning the full 8-button width.
-        The top physical buttons are btn9..btn16 (the footer is btn1..btn8),
-        grid-aligned to the footer. The device-local menu is HIDDEN by default
-        (firmware), so the whole strip is ours for content; pressing btn9 pops
-        the menu over the bar's first 4 cells (btn9..btn12). We can't draw the
-        menu, but we leave a small down-chevron affordance at the btn9 position
-        so the user knows the menu lives there. `font` overrides the title face
-        (e.g. Chicago for the new-game screen)."""
+        """Top strip = one instruction bar spanning the full 8-button width,
+        grid-aligned to the footer. Top physical buttons are btn9..btn16
+        (footer = btn1..btn8). Per the device button contract (docs/
+        INTERFACE_DESIGN.md §4) the LEFTMOST top key (btn9) is the only
+        device-local key in normal operation: a single press toggles the
+        device-local overlay, which takes over the WHOLE top row and the whole
+        screen; pressing it again hides the overlay and btn10..btn16 return to
+        the app. We can't draw the overlay, but we draw a small down-chevron +
+        separator at the btn9 position as its affordance; the rest of the bar
+        is instruction text. `font` overrides the title face (e.g. Chicago for
+        the new-game screen)."""
         font = font or self.f_mac
         y0, y1 = 4, 48
         bx0, _ = self._btn_cell(0)
@@ -700,7 +712,7 @@ class PilEngine:
         else:
             # create mode: point at the real button
             self.text_centered(draw, cxc, by1 - 70,
-                               "Criar jogo:  botao 5  ou  ENTER", self.f_mac)
+                               "Criar jogo:  botão 5  ou  ENTER", self.f_mac)
 
         if helper_text and helper_text.strip():
             self.text_centered(draw, self.width // 2, by1 + 18,

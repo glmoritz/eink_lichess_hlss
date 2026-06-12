@@ -306,17 +306,17 @@ class RendererService:
         img = self._create_base_image()
         draw = ImageDraw.Draw(img)
 
-        self._render_header(draw, "Setup")
+        self._render_header(draw, "Configuração")
         self._render_context_bar(draw, [])
         left, top, right, bottom = self._content_bounds()
 
         instructions = [
-            "No Lichess account configured.",
+            "Nenhuma conta Lichess configurada.",
             "",
-            "Scan the QR code or visit:",
+            "Escaneie o QR code ou visite:",
             config_url,
             "",
-            "to configure your account.",
+            "para configurar sua conta.",
         ]
 
         y = top + 8
