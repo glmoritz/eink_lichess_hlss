@@ -35,9 +35,13 @@ class LichessAccount(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     username: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    api_token: Mapped[str] = mapped_column(
-        Text, nullable=False
-    )  # Should be encrypted in production
+    api_token: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )  # null for local accounts; should be encrypted in production
+    # "lichess" (Lichess-backed, has api_token) or "local" (offline play, no token)
+    backend: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="lichess", server_default="lichess"
+    )
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -91,8 +95,17 @@ class Game(Base):
     __tablename__ = "games"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
-    lichess_game_id: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    # For local games this is a synthetic "local-<uuid>" id (col is unique+not-null).
+    lichess_game_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     account_id: Mapped[str] = mapped_column(String(36), ForeignKey("lichess.lichess_accounts.id"))
+    # "lichess" or "local" — selects the GameBackend that drives this game.
+    backend: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="lichess", server_default="lichess"
+    )
+    # Local human-vs-human: the two mirrored rows of one match share match_id, and
+    # each row's instance_id is the HLSS instance that plays that side (for frame relay).
+    match_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    instance_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
 
     # Game metadata
     player_color: Mapped[GameColor] = mapped_column(Enum(GameColor), nullable=False)

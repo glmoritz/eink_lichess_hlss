@@ -33,8 +33,11 @@ async def lifespan(app: FastAPI):
         # Auto-create tables in development
         init_db()
     yield
-    # Shutdown
-    pass
+    # Shutdown: tear down the persistent Stockfish process (its engine thread is
+    # non-daemon, so close it for a clean reload/exit).
+    from hlss.services.local_engine import local_engine
+
+    local_engine.close()
 
 
 app = FastAPI(

@@ -44,6 +44,7 @@ from hlss.schemas import (
     RenderResponse,
 )
 from hlss.security import require_llss_auth
+from hlss.services.backends import is_local, local_backend
 from hlss.services.input_processor import InputProcessorService
 from hlss.services.lichess import LichessService
 from hlss.services.renderer import RendererService
@@ -210,7 +211,7 @@ def receive_instance_input(
         else:
             error_message = move_or_error
 
-    # If a move was confirmed, send it to Lichess
+    # If a move was confirmed, apply it (local engine) or send it to Lichess.
     if move_uci and not error_message:
         if not instance.current_game_id:
             error_message = "No active game to send move"
@@ -220,15 +221,45 @@ def receive_instance_input(
                 error_message = "Game not found"
             elif not game.account:
                 error_message = "No linked account"
+            elif is_local(game):
+                # Local backend: apply our move + (for an AI game) Stockfish's
+                # reply, synchronously. No network.
+                local_backend.submit_move(db, game, move_uci)
             else:
                 lichess_service = LichessService(game.account.api_token)
                 success = lichess_service.make_move(game.lichess_game_id, move_uci)
                 if not success:
                     error_message = "Failed to send move to Lichess"
                 else:
-                    # Sync the game state after sending the move using InputProcessorService
-                    processor.sync_active_games_for_account(game.account_id)
+                    # Optimistic local update: we know our own move, so apply it
+                    # locally and render instantly — no Lichess round-trip, and no
+                    # anti-cheat-delayed /playing poll. python-chess validates
+                    # legality + every end condition (mate, stalemate, insufficient
+                    # material, 5-fold repetition, 75-move). The opponent's reply
+                    # arrives via the realtime game stream.
+                    processor.apply_local_move(game, move_uci)
                     db.commit()
+
+    # Keep a realtime Board stream open for the active game so the opponent's
+    # moves and game-end arrive and render automatically — no per-press stream
+    # opens. No-ops if already streaming.
+    try:
+        if instance.current_screen == ScreenType.PLAY and instance.current_game_id:
+            _game = db.get(Game, instance.current_game_id)
+            if (
+                _game
+                and not is_local(_game)
+                and _game.status == GameStatus.STARTED
+                and _game.account
+                and _game.account.api_token
+            ):
+                from hlss.services.game_stream import game_stream_manager
+
+                game_stream_manager.ensure_stream(
+                    instance.id, _game.lichess_game_id, _game.account.api_token
+                )
+    except Exception:
+        pass
 
     # Mark event as processed
     event.processed = True
@@ -592,6 +623,12 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                             ai_level = ai_level_from_id(adversary_id)
                             if ai_level is not None:
                                 selected_adversary = ai_adversary_label(ai_level)
+                            elif adversary_id.startswith("local-"):
+                                acc = db.get(
+                                    LichessAccount, adversary_id[len("local-"):]
+                                )
+                                if acc:
+                                    selected_adversary = acc.username
                             else:
                                 from hlss.models import Adversary
 

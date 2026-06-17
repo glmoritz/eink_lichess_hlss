@@ -23,6 +23,7 @@ from hlss.models import (
     ScreenType,
 )
 from hlss.schemas import MoveState, MoveStateStep
+from hlss.services.backends import BACKEND_LOCAL, is_local, local_backend
 from hlss.services.lichess import LichessService
 from hlss.services.move_selection import MoveSelectionHelper
 from hlss.services.new_match_state import (
@@ -45,6 +46,9 @@ class AdversaryOption:
     friendly_name: str
     is_ai: bool = False
     ai_level: Optional[int] = None
+    # Set for a LOCAL human opponent (another local account on this HLSS); the
+    # value is that account's id. Selecting it starts a local mirrored match.
+    partner_account_id: Optional[str] = None
 
 
 class InputProcessorService:
@@ -132,8 +136,17 @@ class InputProcessorService:
         # Build navigation targets: start with NEW_MATCH, then one entry per active game
         targets: list[str] = ["new_match"]
 
-        # Sync active games if not synced in the last 30 seconds
-        if instance.linked_account_id:
+        # Sync active games if not synced in the last 30 seconds. Skip entirely
+        # while the current game is local (Stockfish AI / local human match):
+        # the Lichess sync hits the network (get_ongoing_games + per-game
+        # streams) and would impose the multi-second latency local play exists
+        # to avoid. A tokenless local account is already a no-op inside sync.
+        cur_game = (
+            self.db.get(Game, instance.current_game_id)
+            if instance.current_game_id
+            else None
+        )
+        if instance.linked_account_id and not (cur_game and is_local(cur_game)):
             account = self.db.get(LichessAccount, instance.linked_account_id)
             if account:
                 now = datetime.utcnow()
@@ -276,6 +289,28 @@ class InputProcessorService:
 
         return False, None
 
+    def _ensure_account(self, instance: Instance) -> Optional[LichessAccount]:
+        """Return the instance's linked account, creating a local (tokenless)
+        account on first use so local play needs no Lichess setup."""
+        if instance.linked_account_id:
+            acc = self.db.get(LichessAccount, instance.linked_account_id)
+            if acc:
+                return acc
+        base = (instance.name or "Jogador").strip() or "Jogador"
+        username = base
+        n = 1
+        while self.db.query(LichessAccount).filter(
+            LichessAccount.username == username
+        ).first():
+            n += 1
+            username = f"{base} {n}"
+        acc = LichessAccount(username=username, api_token=None, backend=BACKEND_LOCAL)
+        self.db.add(acc)
+        self.db.flush()
+        instance.linked_account_id = acc.id
+        self.db.commit()
+        return acc
+
     def _create_new_match(
         self,
         instance: Instance,
@@ -287,12 +322,9 @@ class InputProcessorService:
         DB and jump straight to the PLAY screen. Human -> send a correspondence
         challenge (they must accept before a game exists), and report it.
         """
-        if not instance.linked_account_id:
-            return False, "No account linked"
-
-        account = self.db.get(LichessAccount, instance.linked_account_id)
-        if not account or not account.api_token:
-            return False, "Account not configured"
+        account = self._ensure_account(instance)
+        if account is None:
+            return False, "Sem conta"
 
         options = self._adversary_options(account.id)
         if not options:
@@ -304,27 +336,47 @@ class InputProcessorService:
         if color not in NEW_MATCH_COLORS:
             color = NEW_MATCH_COLORS[0]
 
-        lichess = LichessService(account.api_token)
-
         if selected.is_ai:
+            # Local Stockfish: instant, offline, works for any account (even with
+            # no Lichess token).
             try:
-                game = lichess.create_ai_challenge(level=selected.ai_level or 3, color=color)
+                game = local_backend.create_ai_game(
+                    self.db, account, instance, selected.ai_level or 3, color
+                )
             except Exception as exc:
                 return False, f"Falha ao iniciar IA: {str(exc)[:80]}"
-            game_id = self._extract_game_id(game)
-            # Bring the freshly-created game into our DB, then open it.
-            try:
-                self.sync_active_games_for_account(account.id)
-            except Exception:
-                pass
-            local = self._find_local_game(account.id, game_id)
-            if local is not None:
-                instance.current_screen = ScreenType.PLAY
-                instance.current_game_id = local.id
-                self.db.commit()
-                return True, f"{selected.friendly_name}: jogo iniciado"
-            return True, f"{selected.friendly_name}: jogo criado"
+            instance.current_screen = ScreenType.PLAY
+            instance.current_game_id = game.id
+            self.db.commit()
+            return True, f"{selected.friendly_name}: jogo iniciado"
 
+        if selected.partner_account_id:
+            # Local human match vs another local account/device on this HLSS.
+            partner_acc = self.db.get(LichessAccount, selected.partner_account_id)
+            partner_inst = (
+                self.db.query(Instance)
+                .filter(Instance.linked_account_id == selected.partner_account_id)
+                .first()
+                if partner_acc
+                else None
+            )
+            if partner_acc is None or partner_inst is None:
+                return False, "Oponente indisponivel"
+            try:
+                game = local_backend.create_human_match(
+                    self.db, account, instance, partner_acc, partner_inst, color
+                )
+            except Exception as exc:
+                return False, f"Falha ao iniciar: {str(exc)[:80]}"
+            instance.current_screen = ScreenType.PLAY
+            instance.current_game_id = game.id
+            self.db.commit()
+            return True, f"{partner_acc.username}: jogo iniciado"
+
+        # Human adversary -> Lichess correspondence challenge (needs a token).
+        if not account.api_token:
+            return False, "Conta Lichess necessaria"
+        lichess = LichessService(account.api_token)
         # Human adversary -> correspondence challenge (needs the opponent to accept).
         try:
             challenge = lichess.create_challenge(
@@ -339,6 +391,51 @@ class InputProcessorService:
         if challenge_id:
             message = f"Desafio {challenge_id} enviado a {selected.friendly_name}"
         return True, message
+
+    def _repeat_game(self, instance: Instance, game: Game) -> tuple[bool, Optional[str]]:
+        """Start a fresh game vs the same opponent as the finished `game`
+        ("Repetir Jogo" on the game-over screen). Stockfish AI is identified by
+        the stored opponent name "Stockfish level N"; anything else is treated as
+        a human re-challenge. Same player colour as before."""
+        account = self._ensure_account(instance)
+        if account is None:
+            return False, "Sem conta"
+
+        color = game.player_color.value if game.player_color else NEW_MATCH_COLORS[0]
+        opp = (game.opponent_username or "").strip()
+
+        ai_level: Optional[int] = None
+        prefix = "Stockfish level "
+        if opp.startswith(prefix):
+            try:
+                ai_level = int(opp[len(prefix):].strip())
+            except ValueError:
+                ai_level = None
+
+        try:
+            if ai_level is not None:
+                # Local Stockfish rematch — instant, offline.
+                new_game = local_backend.create_ai_game(
+                    self.db, account, instance, ai_level, color
+                )
+                instance.current_screen = ScreenType.PLAY
+                instance.current_game_id = new_game.id
+                self.db.commit()
+                return True, f"{opp}: novo jogo"
+
+            # Human adversary -> correspondence challenge (needs them to accept).
+            if not opp:
+                return False, "Sem adversario para repetir"
+            if not account.api_token:
+                return False, "Conta Lichess necessaria"
+            lichess = LichessService(account.api_token)
+            challenge = lichess.create_challenge(username=opp, color=color)
+            challenge_id = self._extract_challenge_id(challenge)
+            if challenge_id:
+                return True, f"Desafio {challenge_id} enviado a {opp}"
+            return True, f"Desafio enviado a {opp}"
+        except Exception as exc:
+            return False, f"Falha ao repetir: {str(exc)[:80]}"
 
     @staticmethod
     def _extract_game_id(payload: Any) -> Optional[str]:
@@ -391,6 +488,31 @@ class InputProcessorService:
             )
             for level in AI_LEVELS
         ]
+        # Local human opponents: other local accounts on this HLSS that have a
+        # device (instance). Selecting one starts a local mirrored match.
+        for acc in (
+            self.db.query(LichessAccount)
+            .filter(
+                LichessAccount.backend == BACKEND_LOCAL,
+                LichessAccount.id != account_id,
+            )
+            .all()
+        ):
+            inst = (
+                self.db.query(Instance)
+                .filter(Instance.linked_account_id == acc.id)
+                .first()
+            )
+            if inst is None:
+                continue
+            options.append(
+                AdversaryOption(
+                    id=f"local-{acc.id}",
+                    lichess_username=acc.username,
+                    friendly_name=acc.username,
+                    partner_account_id=acc.id,
+                )
+            )
         for adv in self._get_adversaries_for_account(account_id):
             options.append(
                 AdversaryOption(
@@ -508,11 +630,17 @@ class InputProcessorService:
 
             sync_count += 1
 
-        # Now, find all games in DB for this account with status STARTED that are not in ongoing_ids
+        # Now, find all *Lichess* games in DB for this account with status STARTED
+        # that are no longer ongoing. Local-backend games (Stockfish AI / local
+        # human matches) have synthetic "local-..." ids that are never in
+        # ongoing_ids; they are not Lichess games and must not be touched here,
+        # or this loop would fetch their (nonexistent) Lichess stream, fail, and
+        # mark them UNKNOWN_FINISH ("Finalização desconhecida").
         db_games = (
             self.db.query(Game)
             .filter(Game.account_id == account.id)
             .filter(Game.status == GameStatus.STARTED)
+            .filter(Game.backend != BACKEND_LOCAL)
             .all()
         )
         for db_game in db_games:
@@ -883,6 +1011,61 @@ class InputProcessorService:
         instance.new_match_state = serialize_new_match_state(state)
         self.db.commit()
 
+    @staticmethod
+    def _outcome_to_status(outcome) -> GameStatus:
+        """Map a python-chess Outcome to our GameStatus. With claim_draw=False
+        only forced terminations occur: checkmate, stalemate, insufficient
+        material, fivefold repetition, seventyfive-move rule."""
+        if outcome.termination == chess.Termination.CHECKMATE:
+            return GameStatus.MATE
+        if outcome.termination == chess.Termination.STALEMATE:
+            return GameStatus.STALEMATE
+        # insufficient material / 5-fold repetition / 75-move -> draw
+        return GameStatus.DRAW
+
+    def apply_local_move(self, game: Game, move_uci: str) -> None:
+        """Apply our own just-sent move to the game state locally so the board
+        renders instantly without a Lichess round-trip (the /playing poll is
+        anti-cheat-delayed anyway). Rebuilds the board from the move history so
+        python-chess can judge legality and EVERY forced end condition —
+        checkmate, stalemate, insufficient material, 5-fold repetition, 75-move.
+        Authoritative state still arrives via the realtime game stream; on any
+        inconsistency we fall back to a full sync."""
+        try:
+            start = (
+                game.initial_fen
+                if (game.initial_fen and game.initial_fen != "startpos")
+                else chess.STARTING_FEN
+            )
+            board = chess.Board(start)
+            for u in (game.moves or "").split():
+                board.push(chess.Move.from_uci(u))
+
+            mv = chess.Move.from_uci(move_uci)
+            if mv not in board.legal_moves:
+                # Local history disagrees with the move we just sent — reconcile.
+                self.sync_active_games_for_account(game.account_id)
+                return
+
+            board.push(mv)
+            game.fen = board.fen()
+            game.moves = ((game.moves or "") + " " + move_uci).strip()
+            game.last_move = move_uci
+            game.is_my_turn = False
+            game.move_state = None
+
+            outcome = board.outcome(claim_draw=False)
+            if outcome is not None:
+                game.status = self._outcome_to_status(outcome)
+
+            self.db.commit()
+        except Exception:
+            # Never let an optimistic-update glitch break the move; reconcile.
+            try:
+                self.sync_active_games_for_account(game.account_id)
+            except Exception:
+                pass
+
     def _handle_play_input(
         self,
         instance: Instance,
@@ -896,7 +1079,27 @@ class InputProcessorService:
         if not game:
             return False, "Game not found"
 
+        # When we believe it's the opponent's turn, pull the latest state before
+        # deciding: the opponent's reply — or a game-ending move such as
+        # checkmate — arrives asynchronously after our move, and nothing else
+        # re-syncs it. Without this, being mated by Stockfish froze the board and
+        # every button press bounced off "Not your turn" forever.
+        if (
+            game.backend != BACKEND_LOCAL
+            and game.status == GameStatus.STARTED
+            and not game.is_my_turn
+        ):
+            try:
+                self.sync_active_games_for_account(game.account_id)
+                self.db.refresh(game)
+            except Exception:
+                pass
+
         if game.status != GameStatus.STARTED:
+            # BTN_8 = "Repetir Jogo" on the game-over screen -> rematch the same
+            # opponent. Any other button just re-shows the game-over board.
+            if button == ButtonType.BTN_8:
+                return self._repeat_game(instance, game)
             return True, "Game finished"
 
         if not game.is_my_turn:

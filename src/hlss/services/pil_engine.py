@@ -585,35 +585,38 @@ class PilEngine:
         # ---- top strip: 8-cell device-button grid (mirrors the footer) ----
         self._top_bar(draw, view.get("title", ""))
 
-        # ---- opponent card (left upper triangle) — kept thin so it tucks into
-        # the corner clear of the board's far edge ----
-        self._mac_box(draw, (6, 50, 196, 112))
-        draw.text((12, 54), self._cap_glyph("N", not view.get("orientation_white", True)),
+        # ---- opponent card (left upper triangle) — >=10px below the top bar
+        # (bottom y=48) and pulled in so it clears the board far edge / pieces
+        # (board starts at x=204, Y_FAR=132) by >=15px ----
+        self._mac_box(draw, (6, 60, 178, 116))
+        draw.text((12, 64), self._cap_glyph("N", not view.get("orientation_white", True)),
                   fill=BLACK, font=self.f_glyph)
-        draw.text((34, 55), self._fit(draw, view.get("adversary_name", ""), self.f_mac, 148),
+        draw.text((34, 65), self._fit(draw, view.get("adversary_name", ""), self.f_mac, 132),
                   fill=BLACK, font=self.f_mac)
         cap = "".join(self._cap_glyph(l, w)
                       for (l, w) in view.get("adversary_captured", [])[:9])
-        draw.text((12, 73), cap or "—", fill=BLACK, font=self.f_glyph)
+        draw.text((12, 83), cap or "—", fill=BLACK, font=self.f_glyph)
         last_san = self._last_san(view)
-        draw.text((12, 93), self._fit(draw, "Últ: " + (last_san or "—"), self.f_mac_small, 176),
+        draw.text((12, 101), self._fit(draw, "Últ: " + (last_san or "—"), self.f_mac_small, 158),
                   fill=BLACK, font=self.f_mac_small)
 
-        # ---- hint card (right upper triangle): move-composition feedback ----
-        self._mac_box(draw, (572, 50, 788, 120))
+        # ---- hint card (right upper triangle): move-composition feedback —
+        # >=10px below the top bar, pulled right to clear the board pieces by
+        # >=15px (board far edge ends at x=560) ----
+        self._mac_box(draw, (578, 60, 788, 116))
         mt = view.get("move_title") or ""
         if mt:
-            draw.text((580, 54), self._fit(draw, mt, self.f_mac_small, 200),
+            draw.text((584, 64), self._fit(draw, mt, self.f_mac_small, 196),
                       fill=BLACK, font=self.f_mac_small)
         plines = view.get("preview_lines")
         if plines:
             for i, ln in enumerate(plines[:2]):
-                draw.text((580, 72 + i * 17), self._fit(draw, ln, self.f_mac, 200),
+                draw.text((584, 82 + i * 16), self._fit(draw, ln, self.f_mac, 196),
                           fill=BLACK, font=self.f_mac)
         else:
-            self.text_centered(draw, 680, 76,
+            self.text_centered(draw, 683, 88,
                                self._fit(draw, view.get("move_preview", "") or "",
-                                         self.f_mac_title, 200), self.f_mac_title)
+                                         self.f_mac_title, 196), self.f_mac_title)
 
         # ---- bottom footer: physical buttons B1..B8 ----
         self._play_footer(draw, b)
