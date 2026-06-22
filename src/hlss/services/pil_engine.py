@@ -60,8 +60,11 @@ _FONT_BOLD_PATHS = [
 # ---- PLAY screen: Chess Player 2150 sprites + classic-Mac fonts ----
 _ASSET_DIR = Path(__file__).resolve().parent.parent / "assets" / "cp2150"
 _CHICAGO = _ASSET_DIR / "ChicagoFLF.ttf"
-_GENEVA15 = _ASSET_DIR / "Geneva_15.dfont"
-_GENEVA12 = _ASSET_DIR / "Geneva_12.dfont"
+# Geneva as PIL bitmap fonts (.pil/.pbm) extracted from the original Mac bitmap
+# strikes. PIL renders these itself (no FreeType), so they're portable — the
+# original .dfont relied on Apple-bitmap FreeType support absent in slim images.
+_GENEVA15 = _ASSET_DIR / "Geneva_15.pil"
+_GENEVA12 = _ASSET_DIR / "Geneva_12.pil"
 # python-chess symbol (upper=white / lower=black) -> sprite filename.
 # The *2 set is bg-removed + trimmed (clean alpha, uniform ~48x76 footprint).
 _SYM2FILE = {
@@ -93,6 +96,10 @@ class PilEngine:
         for p in paths:
             if Path(p).exists():
                 try:
+                    # PIL bitmap fonts (.pil + sibling .pbm) load via load(),
+                    # render without FreeType, and are fixed-size (size ignored).
+                    if str(p).endswith(".pil"):
+                        return ImageFont.load(str(p))
                     return ImageFont.truetype(p, size)
                 except OSError:
                     continue
