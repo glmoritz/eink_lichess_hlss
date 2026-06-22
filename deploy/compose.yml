@@ -1,0 +1,28 @@
+# HLSS production deployment on the server (router-linux-host).
+#   Deploy: git pull && docker compose -f deploy/compose.yml up -d --build
+#
+# Internal-only: sits on the internal_containers macvlan pinned at 172.30.0.49,
+# serving :8000 under /api. Only LLSS calls it (no traefik labels). DNS
+# eink-hlss-chess.tutu.lan -> .49; the LLSS DB row hlss_types.base_url points to
+# http://eink-hlss-chess.tutu.lan:8000/api (name, not IP). Postgres is reached
+# internally via postgres.tutu.lan (same VLAN).
+name: eink-hlss
+services:
+  hlss:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: eink-hlss:debug
+    container_name: eink-hlss
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - PORT=8000
+    networks:
+      internal_containers:
+        ipv4_address: 172.30.0.49
+
+networks:
+  internal_containers:
+    external: true
