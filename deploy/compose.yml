@@ -12,6 +12,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      # This host's docker has no default `bridge` network, so build RUN steps
+      # must use host networking to get internet (apt/pip).
+      network: host
     image: eink-hlss:debug
     container_name: eink-hlss
     restart: unless-stopped
