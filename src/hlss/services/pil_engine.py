@@ -73,6 +73,12 @@ _SYM2FILE = {
     "p": "black_pawn2", "n": "black_knight2", "b": "black_bishop2",
     "r": "black_rook2", "q": "black_queen2", "k": "black_king2",
 }
+# 2D pixel-art piece glyphs (eink_chess): black pieces are solid silhouettes,
+# white pieces are outlined — used for captured/opponent (and later button/
+# last-move/selector) glyphs. Small (~20-33px native), NEAREST-scaled.
+_GLYPH2D_DIR = _ASSET_DIR.parent / "glyphs2d"
+_PIECE2NAME = {"K": "king", "Q": "queen", "R": "rook",
+               "B": "bishop", "N": "knight", "P": "pawn"}
 # captured-piece Unicode glyph offsets (white base U+2654, black base U+265A)
 _GORD = {"K": 0, "Q": 1, "R": 2, "B": 3, "N": 4, "P": 5}
 
@@ -117,6 +123,7 @@ class PilEngine:
         self.f_mac = self._pick_font([str(_GENEVA15)] + _FONT_PATHS, 15)
         self.f_mac_small = self._pick_font([str(_GENEVA12)] + _FONT_PATHS, 12)
         self.f_glyph = self._pick_font(_FONT_PATHS, 16)   # DejaVu has chess glyphs
+        self._g2d_cache: dict = {}                        # 2D piece-sprite cache
 
     # ---- canvas / finalize ---------------------------------------------
     def _canvas(self) -> Image.Image:
@@ -203,6 +210,36 @@ class PilEngine:
         px = int(x0 + ((x1 - x0) - side) / 2)
         py = int(y0 + ((y1 - y0) - side) / 2)
         img.paste(gray, (px, py), alpha)
+
+    # ---- 2D pixel-art piece glyphs (captured / labels) -----------------
+    def _glyph2d_img(self, letter: str, white: bool, target_h: int):
+        """Return the 2D sprite for a piece, NEAREST-scaled to target_h (cached)."""
+        key = (letter.upper(), bool(white), int(target_h))
+        cached = self._g2d_cache.get(key)
+        if cached is not None:
+            return cached
+        name = _PIECE2NAME.get(letter.upper())
+        if not name:
+            return None
+        path = _GLYPH2D_DIR / f"2d{'white' if white else 'black'}_{name}.png"
+        if not path.exists():
+            return None
+        im = Image.open(path).convert("RGBA")
+        if im.height != target_h and im.height > 0:
+            w = max(1, round(im.width * target_h / im.height))
+            im = im.resize((w, target_h), Image.NEAREST)
+        self._g2d_cache[key] = im
+        return im
+
+    def paste_glyph2d(self, img: Image.Image, letter: str, white: bool,
+                      x: int, y: int, target_h: int) -> int:
+        """Paste a 2D piece sprite with its top-left at (x, y), scaled to
+        target_h, alpha-composited on the L canvas. Returns advance width."""
+        im = self._glyph2d_img(letter, white, target_h)
+        if im is None:
+            return 0
+        img.paste(im.convert("L"), (int(x), int(y)), im.split()[3])
+        return im.width
 
     # ---- text -----------------------------------------------------------
     def text(self, draw: ImageDraw.ImageDraw, xy, s: str, font, anchor=None,
@@ -596,13 +633,19 @@ class PilEngine:
         # (bottom y=48) and pulled in so it clears the board far edge / pieces
         # (board starts at x=204, Y_FAR=132) by >=15px ----
         self._mac_box(draw, (6, 60, 178, 116))
-        draw.text((12, 64), self._cap_glyph("N", not view.get("orientation_white", True)),
-                  fill=BLACK, font=self.f_glyph)
+        self.paste_glyph2d(img, "N", not view.get("orientation_white", True), 12, 62, 18)
         draw.text((34, 65), self._fit(draw, view.get("adversary_name", ""), self.f_mac, 132),
                   fill=BLACK, font=self.f_mac)
-        cap = "".join(self._cap_glyph(l, w)
-                      for (l, w) in view.get("adversary_captured", [])[:9])
-        draw.text((12, 83), cap or "—", fill=BLACK, font=self.f_glyph)
+        # captured pieces as a row of 2D pixel-art sprites
+        capped = view.get("adversary_captured", [])
+        if capped:
+            cx = 12
+            for (cl, cw) in capped[:14]:
+                cx += self.paste_glyph2d(img, cl, cw, cx, 84, 13) + 1
+                if cx > 172:
+                    break
+        else:
+            draw.text((12, 83), "—", fill=BLACK, font=self.f_mac_small)
         last_san = self._last_san(view)
         draw.text((12, 101), self._fit(draw, "Últ: " + (last_san or "—"), self.f_mac_small, 158),
                   fill=BLACK, font=self.f_mac_small)
