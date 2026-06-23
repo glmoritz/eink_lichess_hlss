@@ -711,8 +711,15 @@ class PilEngine:
             self.draw_san2d(img, draw, int(cx - w / 2), int(cy - sh / 2),
                             label, white, (x1 - x0) - 6)
             return
-        bb = draw.textbbox((0, 0), label, font=self.f_mac)
-        draw.text((cx - (bb[2] - bb[0]) / 2, cy - 4), label, fill=BLACK, font=self.f_mac)
+        # plain-text buttons (pawn SAN, file/rank selects, O-O, actions) use
+        # Chicago to match the move buttons; long labels (CONFIRMAR/CANCELAR)
+        # fall back to the narrower Geneva so they still fit the cell.
+        f = self.f_mac_title
+        if self.text_w(draw, label, f) > (x1 - x0) - 8:
+            f = self.f_mac
+        bb = draw.textbbox((0, 0), label, font=f)
+        draw.text((cx - (bb[2] - bb[0]) / 2 - bb[0], cy - (bb[3] - bb[1]) / 2 - bb[1]),
+                  label, fill=BLACK, font=f)
 
     def _last_san(self, view: dict):
         san = view.get("last_move_san")
@@ -830,13 +837,13 @@ class PilEngine:
         self._top_bar(draw, view.get("title", ""))
 
         # ---- player boxes: opponent (left wedge) + me (right wedge). Short &
-        # wide (y=56..196, x=6..150 / 650..794 = 144x140): the wedge is widest
+        # narrow (y=56..196, x=6..134 / 666..794 = 128x140): the wedge is widest
         # near the top, so at the box bottom (y=196) the board edges are x~171
-        # (left) / x~593 (right) -> >=20px clearance. The opponent box carries
+        # (left) / x~593 (right) -> ample clearance. The opponent box carries
         # the last move; the me box carries my composing move ("my play" lives
         # at the side, not in a top banner). ----
         last_san = self._last_san(view)
-        self._player_box(img, draw, (6, 56, 150, 196),
+        self._player_box(img, draw, (6, 56, 134, 196),
                          view.get("adversary_name", ""),
                          view.get("adversary_captured", []),
                          view.get("adversary_adv", ""),
@@ -850,7 +857,7 @@ class PilEngine:
             me_move = ("", view.get("move_preview", "") or "",
                        view.get("preview_white", True))
             me_text = None
-        self._player_box(img, draw, (650, 56, 794, 196),
+        self._player_box(img, draw, (666, 56, 794, 196),
                          view.get("user_name", ""),
                          view.get("user_captured", []),
                          view.get("user_adv", ""),
