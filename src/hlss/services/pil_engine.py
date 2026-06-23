@@ -271,39 +271,49 @@ class PilEngine:
 
     def _player_box(self, img: Image.Image, draw: ImageDraw.ImageDraw, box,
                     name: str, captured: list, adv: str = "",
-                    last_san: Optional[str] = None) -> None:
-        """Tall, narrow Mac box hugging a side wedge: name, material '+N',
-        captured pieces (Unicode, wrapped grid), and (opponent) the last move."""
+                    footer: Optional[list[str]] = None) -> None:
+        """Compact side box hugging a board wedge. Geneva is fixed-width, so
+        everything is laid out multiline to fit the narrow column: the name
+        wraps (<=2 lines), the captured pieces wrap into a glyph grid, and the
+        footer lines (last move / my play) sit at the bottom."""
         x0, y0, x1, y1 = box
         self._mac_box(draw, box)
-        pad = 6
+        pad, lh = 5, 16
         iw = x1 - x0 - 2 * pad
+        left = x0 + pad
         yy = y0 + pad
-        draw.text((x0 + pad, yy), self._fit(draw, name or "—", self.f_mac, iw),
-                  fill=BLACK, font=self.f_mac)
-        yy += 20
+        # name — wrapped, up to 2 lines
+        for ln in self._wrap(draw, name or "—", self.f_mac, iw, max_lines=2):
+            draw.text((left, yy), ln, fill=BLACK, font=self.f_mac)
+            yy += lh
+        # material advantage "+N"
         if adv:
-            draw.text((x0 + pad, yy), adv, fill=BLACK, font=self.f_mac_small)
-            yy += 16
-        yy += 2
-        bottom = y1 - pad - (16 if last_san is not None else 0)
+            draw.text((left, yy), adv, fill=BLACK, font=self.f_mac_small)
+            yy += 14
+        # footer reserved at the bottom (small font)
+        foot = [f for f in (footer or []) if f]
+        foot_h = len(foot) * 13
+        cap_bottom = y1 - pad - foot_h
+        # captured pieces — Unicode glyphs, wrapped into a multiline grid
         if captured:
             f = self.f_glyph
-            gw = max(11, self.text_w(draw, self._cap_glyph("Q", captured[0][1]), f))
+            gw = max(12, self.text_w(draw, self._cap_glyph("Q", captured[0][1]), f))
             cols = max(1, iw // gw)
-            c = 0
+            c, rowtop = 0, yy
             for (letter, white) in captured:
-                draw.text((x0 + pad + c * gw, yy), self._cap_glyph(letter, white),
+                if rowtop + gw > cap_bottom:
+                    break
+                draw.text((left + c * gw, rowtop), self._cap_glyph(letter, white),
                           fill=BLACK, font=f)
                 c += 1
                 if c >= cols:
-                    c, yy = 0, yy + gw + 1
-                    if yy > bottom - gw:
-                        break
-        if last_san is not None:
-            draw.text((x0 + pad, y1 - pad - 15),
-                      self._fit(draw, "Últ: " + (last_san or "—"), self.f_mac, iw),
-                      fill=BLACK, font=self.f_mac)
+                    c, rowtop = 0, rowtop + gw
+        # footer lines (last move / my composing move)
+        fy = y1 - pad - foot_h
+        for ln in foot:
+            draw.text((left, fy), self._fit(draw, ln, self.f_mac_small, iw),
+                      fill=BLACK, font=self.f_mac_small)
+            fy += 13
 
     # ---- text -----------------------------------------------------------
     def text(self, draw: ImageDraw.ImageDraw, xy, s: str, font, anchor=None,
@@ -582,6 +592,33 @@ class PilEngine:
             s = s[:-1]
         return s + ell
 
+    def _wrap(self, draw, s: str, font, max_w: int, max_lines: int = 99) -> list[str]:
+        """Word-wrap `s` to `max_w` px (Geneva is fixed-width, so plan multiline).
+        A word wider than the box is hard-split; overflow past `max_lines` is
+        dropped with the last shown line ellipsised."""
+        if self._is_bitmap(font):
+            s = self._lat1(s)
+        lines: list[str] = []
+        for raw in s.split():
+            word = raw
+            while word:
+                if lines and self.text_w(draw, lines[-1] + " " + word, font) <= max_w:
+                    lines[-1] += " " + word
+                    word = ""
+                elif self.text_w(draw, word, font) <= max_w:
+                    lines.append(word)
+                    word = ""
+                else:                                   # single word too wide: hard-split
+                    cut = len(word)
+                    while cut > 1 and self.text_w(draw, word[:cut], font) > max_w:
+                        cut -= 1
+                    lines.append(word[:cut])
+                    word = word[cut:]
+                if len(lines) > max_lines:
+                    return [*lines[:max_lines - 1],
+                            self._fit(draw, lines[max_lines - 1], font, max_w)]
+        return lines if lines else [""]
+
     def _mac_box(self, draw, box, shadow=True, width=2) -> None:
         x0, y0, x1, y1 = box
         if shadow:
@@ -721,40 +758,32 @@ class PilEngine:
         # ---- top strip: 8-cell device-button grid (mirrors the footer) ----
         self._top_bar(draw, view.get("title", ""))
 
-        # ---- player boxes: opponent (left wedge) + me (right wedge), tall &
-        # narrow, filling the white margins beside the perspective board. The
-        # box right/left edges stay clear of the board: left edge of the board
-        # is x~204 (top)->119 (y=296), right edge x~560->645, so 110 / 690 keep
-        # >=9px clearance through the full box height ----
+        # ---- player boxes: opponent (left wedge) + me (right wedge). Compact
+        # (~2/3 of the old height: y=56..216, the widest part of the wedge: left
+        # board edge is x~204 top -> 160 at y=216, right ~560 -> 604, so the
+        # x=6..110 / 690..794 columns keep >=50px clearance). The opponent box
+        # carries the last move; the me box carries my composing move ("my
+        # play" lives at the side, not in a top banner). ----
         last_san = self._last_san(view)
-        self._player_box(img, draw, (6, 56, 110, 296),
+        self._player_box(img, draw, (6, 56, 110, 216),
                          view.get("adversary_name", ""),
                          view.get("adversary_captured", []),
-                         view.get("adversary_adv", ""), last_san)
-        self._player_box(img, draw, (690, 56, 794, 296),
+                         view.get("adversary_adv", ""),
+                         ["Últ: " + (last_san or "—")])
+
+        play: list[str] = []
+        mt = view.get("move_title") or ""
+        if mt:
+            play.append(mt)
+        plines = view.get("preview_lines")
+        if plines:
+            play.extend(plines[:2])
+        elif view.get("move_preview"):
+            play.append(view["move_preview"])
+        self._player_box(img, draw, (690, 56, 794, 216),
                          view.get("user_name", ""),
                          view.get("user_captured", []),
-                         view.get("user_adv", ""), None)
-
-        # ---- move-composition feedback: top-center strip in the white band
-        # between the top bar (y=48) and the board far edge (y=132) ----
-        mt = view.get("move_title") or ""
-        plines = view.get("preview_lines")
-        mp = view.get("move_preview", "") or ""
-        if mt or plines or mp:
-            self._mac_box(draw, (150, 54, 650, 126))
-            if mt:
-                self.text_centered(draw, 400, 60,
-                                   self._fit(draw, mt, self.f_mac_small, 484),
-                                   self.f_mac_small)
-            if plines:
-                for i, ln in enumerate(plines[:2]):
-                    self.text_centered(draw, 400, 80 + i * 18,
-                                       self._fit(draw, ln, self.f_mac, 484), self.f_mac)
-            elif mp:
-                self.text_centered(draw, 400, 92,
-                                   self._fit(draw, mp, self.f_mac_title, 484),
-                                   self.f_mac_title)
+                         view.get("user_adv", ""), play)
 
         # ---- bottom footer: physical buttons B1..B8 ----
         self._play_footer(draw, b)
