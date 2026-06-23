@@ -241,6 +241,70 @@ class PilEngine:
         img.paste(im.convert("L"), (int(x), int(y)), im.split()[3])
         return im.width
 
+    def _draw_captured(self, draw: ImageDraw.ImageDraw, x: int, y: int,
+                       captured: list, adv: str = "") -> None:
+        """Row of captured pieces as Unicode glyphs. Equal pieces are stacked
+        with a small overlap to stay compact; per type at most a few are shown,
+        and the material '+N' advantage is appended. Empty -> dash."""
+        if not captured:
+            draw.text((x, y + 2), "—", fill=BLACK, font=self.f_mac_small)
+            return
+        from collections import Counter
+        value = {"Q": 0, "R": 1, "B": 2, "N": 3, "P": 4}
+        counts = Counter(letter for (letter, _w) in captured)
+        white = captured[0][1]
+        f = self.f_glyph
+        step = 6                                  # overlap step for equal pieces
+        gw = max(1, self.text_w(draw, self._cap_glyph("Q", white), f))
+        cx, limit = x, x + 150
+        for letter in sorted(counts, key=lambda l: value.get(l, 9)):
+            n = counts[letter]
+            sym = self._cap_glyph(letter, white)
+            shown = min(n, 5)
+            for i in range(shown):
+                draw.text((cx + i * step, y), sym, fill=BLACK, font=f)
+            cx += (shown - 1) * step + gw + 3
+            if cx > limit:
+                break
+        if adv:
+            draw.text((cx + 2, y + 2), adv, fill=BLACK, font=self.f_mac_small)
+
+    def _player_box(self, img: Image.Image, draw: ImageDraw.ImageDraw, box,
+                    name: str, captured: list, adv: str = "",
+                    last_san: Optional[str] = None) -> None:
+        """Tall, narrow Mac box hugging a side wedge: name, material '+N',
+        captured pieces (Unicode, wrapped grid), and (opponent) the last move."""
+        x0, y0, x1, y1 = box
+        self._mac_box(draw, box)
+        pad = 6
+        iw = x1 - x0 - 2 * pad
+        yy = y0 + pad
+        draw.text((x0 + pad, yy), self._fit(draw, name or "—", self.f_mac, iw),
+                  fill=BLACK, font=self.f_mac)
+        yy += 20
+        if adv:
+            draw.text((x0 + pad, yy), adv, fill=BLACK, font=self.f_mac_small)
+            yy += 16
+        yy += 2
+        bottom = y1 - pad - (16 if last_san is not None else 0)
+        if captured:
+            f = self.f_glyph
+            gw = max(11, self.text_w(draw, self._cap_glyph("Q", captured[0][1]), f))
+            cols = max(1, iw // gw)
+            c = 0
+            for (letter, white) in captured:
+                draw.text((x0 + pad + c * gw, yy), self._cap_glyph(letter, white),
+                          fill=BLACK, font=f)
+                c += 1
+                if c >= cols:
+                    c, yy = 0, yy + gw + 1
+                    if yy > bottom - gw:
+                        break
+        if last_san is not None:
+            draw.text((x0 + pad, y1 - pad - 15),
+                      self._fit(draw, "Últ: " + (last_san or "—"), self.f_mac, iw),
+                      fill=BLACK, font=self.f_mac)
+
     # ---- text -----------------------------------------------------------
     def text(self, draw: ImageDraw.ImageDraw, xy, s: str, font, anchor=None,
              align="left") -> None:
@@ -629,44 +693,40 @@ class PilEngine:
         # ---- top strip: 8-cell device-button grid (mirrors the footer) ----
         self._top_bar(draw, view.get("title", ""))
 
-        # ---- opponent card (left upper triangle) — >=10px below the top bar
-        # (bottom y=48) and pulled in so it clears the board far edge / pieces
-        # (board starts at x=204, Y_FAR=132) by >=15px ----
-        self._mac_box(draw, (6, 60, 178, 116))
-        self.paste_glyph2d(img, "N", not view.get("orientation_white", True), 12, 62, 18)
-        draw.text((34, 65), self._fit(draw, view.get("adversary_name", ""), self.f_mac, 132),
-                  fill=BLACK, font=self.f_mac)
-        # captured pieces as a row of 2D pixel-art sprites
-        capped = view.get("adversary_captured", [])
-        if capped:
-            cx = 12
-            for (cl, cw) in capped[:14]:
-                cx += self.paste_glyph2d(img, cl, cw, cx, 84, 13) + 1
-                if cx > 172:
-                    break
-        else:
-            draw.text((12, 83), "—", fill=BLACK, font=self.f_mac_small)
+        # ---- player boxes: opponent (left wedge) + me (right wedge), tall &
+        # narrow, filling the white margins beside the perspective board. The
+        # box right/left edges stay clear of the board: left edge of the board
+        # is x~204 (top)->119 (y=296), right edge x~560->645, so 110 / 690 keep
+        # >=9px clearance through the full box height ----
         last_san = self._last_san(view)
-        draw.text((12, 101), self._fit(draw, "Últ: " + (last_san or "—"), self.f_mac_small, 158),
-                  fill=BLACK, font=self.f_mac_small)
+        self._player_box(img, draw, (6, 56, 110, 296),
+                         view.get("adversary_name", ""),
+                         view.get("adversary_captured", []),
+                         view.get("adversary_adv", ""), last_san)
+        self._player_box(img, draw, (690, 56, 794, 296),
+                         view.get("user_name", ""),
+                         view.get("user_captured", []),
+                         view.get("user_adv", ""), None)
 
-        # ---- hint card (right upper triangle): move-composition feedback —
-        # >=10px below the top bar, pulled right to clear the board pieces by
-        # >=15px (board far edge ends at x=560) ----
-        self._mac_box(draw, (578, 60, 788, 116))
+        # ---- move-composition feedback: top-center strip in the white band
+        # between the top bar (y=48) and the board far edge (y=132) ----
         mt = view.get("move_title") or ""
-        if mt:
-            draw.text((584, 64), self._fit(draw, mt, self.f_mac_small, 196),
-                      fill=BLACK, font=self.f_mac_small)
         plines = view.get("preview_lines")
-        if plines:
-            for i, ln in enumerate(plines[:2]):
-                draw.text((584, 82 + i * 16), self._fit(draw, ln, self.f_mac, 196),
-                          fill=BLACK, font=self.f_mac)
-        else:
-            self.text_centered(draw, 683, 88,
-                               self._fit(draw, view.get("move_preview", "") or "",
-                                         self.f_mac_title, 196), self.f_mac_title)
+        mp = view.get("move_preview", "") or ""
+        if mt or plines or mp:
+            self._mac_box(draw, (150, 54, 650, 126))
+            if mt:
+                self.text_centered(draw, 400, 60,
+                                   self._fit(draw, mt, self.f_mac_small, 484),
+                                   self.f_mac_small)
+            if plines:
+                for i, ln in enumerate(plines[:2]):
+                    self.text_centered(draw, 400, 80 + i * 18,
+                                       self._fit(draw, ln, self.f_mac, 484), self.f_mac)
+            elif mp:
+                self.text_centered(draw, 400, 92,
+                                   self._fit(draw, mp, self.f_mac_title, 484),
+                                   self.f_mac_title)
 
         # ---- bottom footer: physical buttons B1..B8 ----
         self._play_footer(draw, b)
