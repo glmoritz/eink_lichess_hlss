@@ -807,12 +807,15 @@ class RendererService:
             file_labels.append(chr(ord("a") + file))
 
         last_move_san: Optional[str] = None
+        last_move_white: bool = False
         for _num, _w, _b in reversed(moves):
             if _b:
                 last_move_san = _b
+                last_move_white = False
                 break
             if _w:
                 last_move_san = _w
+                last_move_white = True
                 break
 
         view = {
@@ -821,6 +824,7 @@ class RendererService:
             "squares": squares,
             "last_move": last_move_sqs,
             "last_move_san": last_move_san,
+            "last_move_white": last_move_white,
             "loser_king": loser_king,
             "rank_labels": rank_labels,
             "file_labels": file_labels,

@@ -212,9 +212,11 @@ class PilEngine:
         img.paste(gray, (px, py), alpha)
 
     # ---- 2D pixel-art piece glyphs (captured / labels) -----------------
-    def _glyph2d_img(self, letter: str, white: bool, target_h: int):
-        """Return the 2D sprite for a piece, NEAREST-scaled to target_h (cached)."""
-        key = (letter.upper(), bool(white), int(target_h))
+    def _glyph2d_img(self, letter: str, white: bool, target_h: Optional[int] = None):
+        """Return the 2D sprite for a piece (cached). `target_h=None` keeps the
+        sprite at its NATIVE size — these B&W pixel-art glyphs are designed for
+        one size and resizing ruins them, so native is the default."""
+        key = (letter.upper(), bool(white), int(target_h) if target_h else 0)
         cached = self._g2d_cache.get(key)
         if cached is not None:
             return cached
@@ -225,14 +227,14 @@ class PilEngine:
         if not path.exists():
             return None
         im = Image.open(path).convert("RGBA")
-        if im.height != target_h and im.height > 0:
+        if target_h and im.height != target_h and im.height > 0:
             w = max(1, round(im.width * target_h / im.height))
             im = im.resize((w, target_h), Image.NEAREST)
         self._g2d_cache[key] = im
         return im
 
     def paste_glyph2d(self, img: Image.Image, letter: str, white: bool,
-                      x: int, y: int, target_h: int) -> int:
+                      x: int, y: int, target_h: Optional[int] = None) -> int:
         """Paste a 2D piece sprite with its top-left at (x, y), scaled to
         target_h, alpha-composited on the L canvas. Returns advance width."""
         im = self._glyph2d_img(letter, white, target_h)
@@ -271,11 +273,13 @@ class PilEngine:
 
     def _player_box(self, img: Image.Image, draw: ImageDraw.ImageDraw, box,
                     name: str, captured: list, adv: str = "",
-                    footer: Optional[list[str]] = None) -> None:
+                    move: Optional[tuple] = None,
+                    text_lines: Optional[list[str]] = None) -> None:
         """Compact side box hugging a board wedge. Geneva is fixed-width, so
         everything is laid out multiline to fit the narrow column: the name
-        wraps (<=2 lines), the captured pieces wrap into a glyph grid, and the
-        footer lines (last move / my play) sit at the bottom."""
+        wraps (<=2 lines), captured pieces wrap into a glyph grid, and the
+        bottom shows either `text_lines` (e.g. game-over summary) or a `move`
+        = (prefix, san, white) drawn with a NATIVE 2D piece sprite."""
         x0, y0, x1, y1 = box
         self._mac_box(draw, box)
         pad, lh = 5, 16
@@ -284,15 +288,16 @@ class PilEngine:
         yy = y0 + pad
         # name — wrapped, up to 2 lines
         for ln in self._wrap(draw, name or "—", self.f_mac, iw, max_lines=2):
-            draw.text((left, yy), ln, fill=BLACK, font=self.f_mac)
+            self.text(draw, (left, yy), ln, self.f_mac)
             yy += lh
         # material advantage "+N"
         if adv:
-            draw.text((left, yy), adv, fill=BLACK, font=self.f_mac_small)
+            self.text(draw, (left, yy), adv, self.f_mac_small)
             yy += 14
-        # footer reserved at the bottom (small font)
-        foot = [f for f in (footer or []) if f]
-        foot_h = len(foot) * 13
+        # reserve the bottom for the move row / text lines
+        tlines = [t for t in (text_lines or []) if t]
+        move_h = 34 if (move and (move[1] or move[0])) else 0
+        foot_h = move_h + len(tlines) * 13
         cap_bottom = y1 - pad - foot_h
         # captured pieces — Unicode glyphs, wrapped into a multiline grid
         if captured:
@@ -308,12 +313,26 @@ class PilEngine:
                 c += 1
                 if c >= cols:
                     c, rowtop = 0, rowtop + gw
-        # footer lines (last move / my composing move)
+        # text lines (e.g. game over), then the move row at the very bottom
         fy = y1 - pad - foot_h
-        for ln in foot:
-            draw.text((left, fy), self._fit(draw, ln, self.f_mac_small, iw),
-                      fill=BLACK, font=self.f_mac_small)
+        for ln in tlines:
+            self.text(draw, (left, fy), self._fit(draw, ln, self.f_mac_small, iw),
+                      self.f_mac_small)
             fy += 13
+        if move_h:
+            prefix, san, white = move
+            mx, sh = left, 16
+            if self._san2d_lead(san or ""):
+                sp = self._glyph2d_img(san[0], white)
+                if sp is not None:
+                    sh = sp.height
+            if prefix:
+                self.text(draw, (mx, fy + max(0, (sh - 12) // 2)), prefix, self.f_mac_small)
+                mx += self.text_w(draw, prefix, self.f_mac_small) + 3
+            if san:
+                self.draw_san2d(img, draw, mx, fy, san, white, (left + iw) - mx)
+            else:
+                self.text(draw, (mx, fy + max(0, (sh - 12) // 2)), "—", self.f_mac_small)
 
     # ---- text -----------------------------------------------------------
     def text(self, draw: ImageDraw.ImageDraw, xy, s: str, font, anchor=None,
@@ -425,7 +444,7 @@ class PilEngine:
                   fill=BLACK, font=self.f_mac_small)
 
         # 8-cell Mac footer (all empty: setup has no soft-key actions)
-        self._play_footer(draw, [])
+        self._play_footer(img, draw, [])
         return self.finalize(img)
 
     # ---- SAN / glyph-aware labels --------------------------------------
@@ -471,6 +490,44 @@ class PilEngine:
                           font, glyph_px: int) -> None:
         w = self.san_width(draw, san, font, glyph_px)
         self.draw_san(img, draw, cx - w // 2, y, san, white, font, glyph_px)
+
+    def _san2d_lead(self, san: str) -> bool:
+        """True if `san` starts with a piece letter that gets a 2D sprite."""
+        return bool(san) and san[0] in self._PIECE_LETTERS and not san.startswith("O-O")
+
+    def _san2d_width(self, draw, san: str, white: bool) -> int:
+        if not san:
+            return 0
+        w, rest = 0, san
+        if self._san2d_lead(san):
+            sp = self._glyph2d_img(san[0], white)          # native size
+            if sp is not None:
+                w += sp.width + 2
+                rest = san[1:]
+        if rest:
+            w += self.text_w(draw, rest, self.f_mac)
+        return w
+
+    def draw_san2d(self, img, draw, x: int, y: int, san: str, white: bool,
+                   max_w: int) -> int:
+        """Draw a SAN-ish move with a NATIVE-size 2D piece sprite for the leading
+        piece, then the rest as Geneva text vertically centred on the sprite.
+        `y` is the sprite top; returns the total advance width. Clips to max_w."""
+        if not san:
+            return 0
+        cx, rest, sh = x, san, 16
+        if self._san2d_lead(san):
+            sp = self._glyph2d_img(san[0], white)          # native, never resized
+            if sp is not None:
+                img.paste(sp.convert("L"), (int(cx), int(y)), sp.split()[3])
+                cx += sp.width + 2
+                sh = sp.height
+                rest = san[1:]
+        if rest:
+            rest = self._fit(draw, rest, self.f_mac, max(8, (x + max_w) - cx))
+            self.text(draw, (cx, y + max(0, (sh - 15) // 2)), rest, self.f_mac)
+            cx += self.text_w(draw, rest, self.f_mac)
+        return cx - x
 
     # ---- PLAY screen ----------------------------------------------------
     # ---- board geometry: parameterised one-point perspective ------------
@@ -629,7 +686,11 @@ class PilEngine:
         draw.line([(x, y), (x, y + 16)], fill=BLACK, width=2)
         draw.polygon([(x + 2, y), (x + 13, y + 4), (x + 2, y + 8)], fill=BLACK)
 
-    def _mac_button(self, draw, box, index: int, label: str) -> None:
+    def _mac_button(self, img, draw, box, index: int, token) -> None:
+        token = token or ()
+        label = token[0] if token else ""
+        white = bool(token[1]) if len(token) > 1 else True
+        is_move = bool(token[2]) if len(token) > 2 else False
         x0, y0, x1, y1 = box
         empty = not (label and label.strip())
         self._mac_box(draw, box, shadow=not empty, width=(1 if empty else 2))
@@ -639,6 +700,13 @@ class PilEngine:
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         if any(ord(ch) > 0x2000 for ch in label):     # flag / icon glyph
             self._draw_flag(draw, int(cx - 6), int(cy - 8))
+            return
+        if is_move and self._san2d_lead(label):        # move w/ a piece -> 2D sprite
+            w = self._san2d_width(draw, label, white)
+            sp = self._glyph2d_img(label[0], white)
+            sh = sp.height if sp is not None else 16
+            self.draw_san2d(img, draw, int(cx - w / 2), int(cy - sh / 2),
+                            label, white, (x1 - x0) - 6)
             return
         bb = draw.textbbox((0, 0), label, font=self.f_mac)
         draw.text((cx - (bb[2] - bb[0]) / 2, cy - 4), label, fill=BLACK, font=self.f_mac)
@@ -758,35 +826,35 @@ class PilEngine:
         # ---- top strip: 8-cell device-button grid (mirrors the footer) ----
         self._top_bar(draw, view.get("title", ""))
 
-        # ---- player boxes: opponent (left wedge) + me (right wedge). Compact
-        # (~2/3 of the old height: y=56..216, the widest part of the wedge: left
-        # board edge is x~204 top -> 160 at y=216, right ~560 -> 604, so the
-        # x=6..110 / 690..794 columns keep >=50px clearance). The opponent box
-        # carries the last move; the me box carries my composing move ("my
-        # play" lives at the side, not in a top banner). ----
+        # ---- player boxes: opponent (left wedge) + me (right wedge). Short &
+        # wide (y=56..196, x=6..150 / 650..794 = 144x140): the wedge is widest
+        # near the top, so at the box bottom (y=196) the board edges are x~171
+        # (left) / x~593 (right) -> >=20px clearance. The opponent box carries
+        # the last move; the me box carries my composing move ("my play" lives
+        # at the side, not in a top banner). ----
         last_san = self._last_san(view)
-        self._player_box(img, draw, (6, 56, 110, 216),
+        self._player_box(img, draw, (6, 56, 150, 196),
                          view.get("adversary_name", ""),
                          view.get("adversary_captured", []),
                          view.get("adversary_adv", ""),
-                         ["Últ: " + (last_san or "—")])
+                         move=("Últ:", last_san or "",
+                               view.get("last_move_white", False)))
 
-        play: list[str] = []
-        mt = view.get("move_title") or ""
-        if mt:
-            play.append(mt)
         plines = view.get("preview_lines")
         if plines:
-            play.extend(plines[:2])
-        elif view.get("move_preview"):
-            play.append(view["move_preview"])
-        self._player_box(img, draw, (690, 56, 794, 216),
+            me_move, me_text = None, plines[:2]
+        else:
+            me_move = ("", view.get("move_preview", "") or "",
+                       view.get("preview_white", True))
+            me_text = None
+        self._player_box(img, draw, (650, 56, 794, 196),
                          view.get("user_name", ""),
                          view.get("user_captured", []),
-                         view.get("user_adv", ""), play)
+                         view.get("user_adv", ""),
+                         move=me_move, text_lines=me_text)
 
         # ---- bottom footer: physical buttons B1..B8 ----
-        self._play_footer(draw, b)
+        self._play_footer(img, draw, b)
         return self.finalize(img)
 
     # ---- shared 8-cell device-button grid ------------------------------
@@ -829,14 +897,14 @@ class PilEngine:
                   self._fit(draw, title, font, bx1 - tx - 12),
                   fill=BLACK, font=font)
 
-    def _play_footer(self, draw, buttons: list) -> None:
-        """Bottom strip = physical buttons B1..B8 only, as Mac boxes."""
+    def _play_footer(self, img, draw, buttons: list) -> None:
+        """Bottom strip = physical buttons B1..B8 only, as Mac boxes. Move
+        buttons (is_move) render the 2D piece sprite + destination text."""
         y0, y1 = 430, 474
         for i in range(self._BTN_N):
             tok = buttons[i] if i < len(buttons) else None
-            label = tok[0] if isinstance(tok, (list, tuple)) and tok else ""
             x0, x1 = self._btn_cell(i)
-            self._mac_button(draw, (round(x0), y0, round(x1), y1), i + 1, label)
+            self._mac_button(img, draw, (round(x0), y0, round(x1), y1), i + 1, tok)
 
     def render_new_match_screen(self, mode: str, card_title: str, card_main: str,
                                 card_sub: str, primary_action: str,
@@ -891,5 +959,5 @@ class PilEngine:
 
         # ---- 8-button Mac footer (BTN_1..BTN_8) ----
         tokens = [(lab,) for lab in (button_labels or [])[:8]]
-        self._play_footer(draw, tokens)
+        self._play_footer(img, draw, tokens)
         return self.finalize(img)
