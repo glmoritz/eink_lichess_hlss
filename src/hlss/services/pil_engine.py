@@ -326,13 +326,14 @@ class PilEngine:
                 sp = self._glyph2d_img(san[0], white)
                 if sp is not None:
                     sh = sp.height
+            pf = self.f_mac_title                          # Chicago: bigger + has accents
             if prefix:
-                self.text(draw, (mx, fy + max(0, (sh - 12) // 2)), prefix, self.f_mac_small)
-                mx += self.text_w(draw, prefix, self.f_mac_small) + 3
+                self.text(draw, (mx, fy + max(0, (sh - pf.size) // 2)), prefix, pf)
+                mx += self.text_w(draw, prefix, pf) + 3
             if san:
                 self.draw_san2d(img, draw, mx, fy, san, white, (left + iw) - mx)
             else:
-                self.text(draw, (mx, fy + max(0, (sh - 12) // 2)), "—", self.f_mac_small)
+                self.text(draw, (mx, fy + max(0, (sh - pf.size) // 2)), "—", pf)
 
     # ---- text -----------------------------------------------------------
     def text(self, draw: ImageDraw.ImageDraw, xy, s: str, font, anchor=None,
@@ -505,14 +506,15 @@ class PilEngine:
                 w += sp.width + 2
                 rest = san[1:]
         if rest:
-            w += self.text_w(draw, rest, self.f_mac)
+            w += self.text_w(draw, rest, self.f_mac_title)
         return w
 
     def draw_san2d(self, img, draw, x: int, y: int, san: str, white: bool,
                    max_w: int) -> int:
         """Draw a SAN-ish move with a NATIVE-size 2D piece sprite for the leading
-        piece, then the rest as Geneva text vertically centred on the sprite.
-        `y` is the sprite top; returns the total advance width. Clips to max_w."""
+        piece, then the rest in Chicago (sized to sit alongside the big glyph,
+        and it has the accents Geneva's bitmap lacks), vertically centred on the
+        sprite. `y` is the sprite top; returns the advance width. Clips to max_w."""
         if not san:
             return 0
         cx, rest, sh = x, san, 16
@@ -524,9 +526,10 @@ class PilEngine:
                 sh = sp.height
                 rest = san[1:]
         if rest:
-            rest = self._fit(draw, rest, self.f_mac, max(8, (x + max_w) - cx))
-            self.text(draw, (cx, y + max(0, (sh - 15) // 2)), rest, self.f_mac)
-            cx += self.text_w(draw, rest, self.f_mac)
+            f = self.f_mac_title
+            rest = self._fit(draw, rest, f, max(8, (x + max_w) - cx))
+            self.text(draw, (cx, y + max(0, (sh - f.size) // 2)), rest, f)
+            cx += self.text_w(draw, rest, f)
         return cx - x
 
     # ---- PLAY screen ----------------------------------------------------
