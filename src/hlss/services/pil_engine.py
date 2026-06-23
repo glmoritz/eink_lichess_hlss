@@ -247,7 +247,7 @@ class PilEngine:
         with a small overlap to stay compact; per type at most a few are shown,
         and the material '+N' advantage is appended. Empty -> dash."""
         if not captured:
-            draw.text((x, y + 2), "—", fill=BLACK, font=self.f_mac_small)
+            self.text(draw, (x, y + 2), "—", self.f_mac_small)
             return
         from collections import Counter
         value = {"Q": 0, "R": 1, "B": 2, "N": 3, "P": 4}
@@ -308,6 +308,8 @@ class PilEngine:
     # ---- text -----------------------------------------------------------
     def text(self, draw: ImageDraw.ImageDraw, xy, s: str, font, anchor=None,
              align="left") -> None:
+        if self._is_bitmap(font):
+            s = self._lat1(s)
         draw.text(xy, s, fill=BLACK, font=font, anchor=anchor, align=align)
 
     def text_w(self, draw: ImageDraw.ImageDraw, s: str, font) -> int:
@@ -318,6 +320,8 @@ class PilEngine:
             return len(s) * 8
 
     def text_centered(self, draw: ImageDraw.ImageDraw, cx: int, y: int, s: str, font) -> None:
+        if self._is_bitmap(font):
+            s = self._lat1(s)
         w = self.text_w(draw, s, font)
         draw.text((cx - w // 2, y), s, fill=BLACK, font=font)
 
@@ -547,12 +551,36 @@ class PilEngine:
     def _cap_glyph(self, letter: str, white: bool) -> str:
         return chr((0x2654 if white else 0x265A) + _GORD[letter])
 
+    # Typographic chars the Geneva *bitmap* fonts (ImageFont.load, no FreeType)
+    # can't encode: they are latin-1-only and raise UnicodeEncodeError on any
+    # codepoint > U+00FF. Map the common ones to safe ASCII; anything else -> '?'.
+    _LAT1_MAP = {
+        "•": "-", "—": "-", "–": "-", "…": "...",
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+        "×": "x", "→": "->", " ": " ",
+    }
+
+    def _lat1(self, s: str) -> str:
+        """Transliterate `s` to a latin-1-safe string for the bitmap fonts.
+        Latin-1 accents (Portuguese á/ç/ã, U+0080..U+00FF) pass through."""
+        if all(ord(c) < 256 for c in s):
+            return s
+        return "".join(c if ord(c) < 256 else self._LAT1_MAP.get(c, "?")
+                       for c in s)
+
+    @staticmethod
+    def _is_bitmap(font) -> bool:
+        return not isinstance(font, ImageFont.FreeTypeFont)
+
     def _fit(self, draw, s: str, font, max_w: int) -> str:
+        if self._is_bitmap(font):
+            s = self._lat1(s)
+        ell = "..." if self._is_bitmap(font) else "…"
         if self.text_w(draw, s, font) <= max_w:
             return s
-        while s and self.text_w(draw, s + "…", font) > max_w:
+        while s and self.text_w(draw, s + ell, font) > max_w:
             s = s[:-1]
-        return s + "…"
+        return s + ell
 
     def _mac_box(self, draw, box, shadow=True, width=2) -> None:
         x0, y0, x1, y1 = box
