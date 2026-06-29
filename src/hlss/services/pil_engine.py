@@ -1096,44 +1096,65 @@ class PilEngine:
         return x0, x0 + bw
 
     def _play_top_strip(self, img, draw, view: dict) -> None:
-        """PLAY-screen top strip: 4 corner action buttons + centred title.
+        """PLAY-screen top strip — 8 slots = btn9..btn16 (left to right).
 
-        Slots 0 and 7 (the outer-most) plus slots 1 and 6 are the four
-        device top buttons (HL_LEFT / ESC / ENTER / HL_RIGHT in the
-        contract slot order). Slots 2..5 carry the title text.
+        Hardware/UX contract (decided 2026-06-29):
+          slot 0  btn9  : no hardware, never pressed (placeholder)
+          slot 1  btn10 : MENU trigger — local-only key that toggles the
+                          device-local menu overlay. Always drawn (small
+                          mac box with a down-chevron icon) so the user
+                          can see where to press.
+          slot 2  btn11 : local-only, free for app content (title space)
+          slot 3  btn12 : local-only, free for app content (title space)
+          slot 4  btn13 : HL_LEFT  — view-toggle "2D"/"3D"
+          slot 5  btn14 : HL_RIGHT — blank/reserved
+          slot 6  btn15 : ENTER    — "Draw"   (label only; behavior
+                          still routes to the existing handler until
+                          draw/resign is properly wired)
+          slot 7  btn16 : ESC      — "Resign" (same caveat)
 
-        Labels (current contract):
-          - slot 0 (HL_LEFT)  : view-toggle target — "2D" while showing
-            3D, "3D" while showing 2D.
-          - slot 1 (ESC)      : "Resign" — reserved; the actual handler
-            still maps short-press ESC to whatever the screen does today.
-          - slot 6 (ENTER)    : "Draw"   — same caveat.
-          - slot 7 (HL_RIGHT) : blank — reserved.
+        Title sits centred across slots 2-3 (the free area between the
+        menu button and the four HLSS-mapped buttons).
         """
         title = view.get("title", "")
         view_label = "3D" if view.get("mode") == "2d" else "2D"
         y0, y1 = 4, 48
 
-        # Four corner buttons. _mac_button skips slots whose token has no
-        # label, which matches the spec ("disabled = empty space").
-        for slot, label in ((0, view_label), (1, "Resign"),
-                            (6, "Draw"), (7, "")):
+        # MENU button at slot 1: a small Mac box with a down-chevron is
+        # the existing affordance for "press here to open the device menu"
+        # — same visual the legacy _top_bar drew at btn9, just relocated
+        # to btn10 since btn9 no longer exists in hardware.
+        mx0, mx1 = self._btn_cell(1)
+        self._mac_box(draw, (round(mx0), y0, round(mx1), y1), shadow=True, width=2)
+        # slot index label in the corner, matching _mac_button
+        draw.text((round(mx0) + 4, y0 + 2), "10",
+                  fill=BLACK, font=self.f_mac_small)
+        # centred down-chevron glyph
+        cmx = (mx0 + mx1) / 2
+        cmy = (y0 + y1) / 2
+        draw.polygon([(cmx - 8, cmy - 5), (cmx + 8, cmy - 5), (cmx, cmy + 6)],
+                     fill=BLACK)
+
+        # Right-hand HLSS-mapped buttons. _mac_button skips slots whose
+        # token has no label (disabled = empty space, per the contract).
+        for slot, label in ((4, view_label), (5, ""),
+                            (6, "Draw"), (7, "Resign")):
             x0, x1 = self._btn_cell(slot)
             self._mac_button(img, draw,
                              (round(x0), y0, round(x1), y1),
                              slot + 9, (label,) if label else None)
 
-        # Centred title across the middle 4 slots. We don't draw a box
-        # here — the corner buttons are the visual anchors and we don't
-        # want the title to look "tied" to slot 0 or 7.
-        _, lx = self._btn_cell(1)
-        rx, _ = self._btn_cell(6)
+        # Centred title across slots 2-3 (the free band between menu and
+        # HL_LEFT). 200 px wide — plenty for game-display strings.
+        l2x, _ = self._btn_cell(2)
+        _, r3x = self._btn_cell(3)
         if title:
             f = self.f_mac_title
-            tw = self.text_w(draw, title, f)
-            cx = (round(lx) + round(rx)) // 2
+            cx = (round(l2x) + round(r3x)) // 2
+            fitted = self._fit(draw, title, f, int(r3x - l2x) - 8)
+            tw = self.text_w(draw, fitted, f)
             self.text(draw, (cx - tw // 2, (y0 + y1 - f.size) // 2 + 1),
-                      self._fit(draw, title, f, int(rx - lx) - 12), f)
+                      fitted, f)
 
     def _top_bar(self, draw, title: str, font=None) -> None:
         """Top strip = one instruction bar spanning the full 8-button width,
