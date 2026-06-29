@@ -460,14 +460,15 @@ class RendererService:
                 mask |= (1 << i)
         return mask
 
-    def render_play_screen_pil(self, game_id: str, player_name: str, db: Session) -> Optional[bytes]:
+    def render_play_screen_pil(self, game_id: str, player_name: str, db: Session,
+                                view_mode: str = "3d") -> Optional[bytes]:
         """Self-contained PIL play-screen renderer (no HTML/Chrome).
 
         Builds an HTML-agnostic ``view`` dict (plain SAN strings, display-space
         board coords, captured-piece lists, glyph-aware button tokens) and hands
-        it to :meth:`PilEngine.render_play`. Mirrors the data-prep of
-        :meth:`render_play_screen` so behavior stays identical, only the final
-        rasterization differs.
+        it to :meth:`PilEngine.render_play`. The dispatch between perspective
+        (3d) and top-down (2d) layouts is driven by ``view_mode`` — both share
+        the same view dict, only the rasterization differs.
         """
         from hlss.models import Game
 
@@ -477,6 +478,7 @@ class RendererService:
         view = self._build_play_view(game, player_name, db)
         if view is None:
             return None
+        view["mode"] = view_mode
         try:
             return self.engine.render_play(view)
         except Exception:
@@ -896,7 +898,8 @@ class RendererService:
         }
         return view
 
-    def render_play_screen(self, game_id: str, player_name: str, db: Session) -> bytes:
+    def render_play_screen(self, game_id: str, player_name: str, db: Session,
+                            view_mode: str = "3d") -> bytes:
         """
         Render the game play screen.
 
@@ -904,12 +907,15 @@ class RendererService:
             game_id: The id of the game to render
             player_name: Player's username
             db: Database session
+            view_mode: "3d" (default) or "2d" — selects the board layout
+                (PIL path only; the legacy HTML path ignores it).
 
         Returns:
             PNG image data
         """
         if self._use_pil():
-            return self.render_play_screen_pil(game_id, player_name, db)
+            return self.render_play_screen_pil(game_id, player_name, db,
+                                               view_mode=view_mode)
 
         import chess
 

@@ -733,10 +733,13 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
             play_player_name = (
                 instance.linked_account.username if instance.linked_account else "Player"
             )
+            from hlss.services import view_state
+            view_mode = view_state.get(instance.id)
             image_data = renderer.render_play_screen(
                 game_id=instance.current_game_id,
                 player_name=play_player_name,
                 db=db,
+                view_mode=view_mode,
             )
             bottom_pressed_data = renderer.render_play_screen_pressed_strip_pil(
                 game_id=instance.current_game_id,

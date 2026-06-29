@@ -770,15 +770,23 @@ class PilEngine:
     # PLAY screen — Chess Player 2150 sprites + Chessmaster perspective board
     # =====================================================================
     def render_play(self, view: dict) -> bytes:
-        """Render the chess play screen from a prepared, HTML-agnostic view.
+        """Dispatch the PLAY screen to the renderer matching view["mode"].
 
-        Vintage-Mac look: a parameterised 3D perspective board (Chessmaster
-        2000), Chess-Player-2150 sprites composited far->near (never resized),
-        classic-Mac framed boxes (Chicago/Geneva) for the opponent card, turn/
-        status strip and move-composition hint, edge coordinates, and an 8-button
-        Mac footer (B1..B8). The top strip mirrors the footer's 8-cell grid: a
-        down-arrow menu trigger (cell 1) + an instruction bar (cells 2..8).
-        Output is pure 1bpp B/W.
+        Supported modes:
+          - "3d" (default): Chessmaster-2000 perspective with chess-2150
+            sprites composited far->near. The original look.
+          - "2d": flat top-down board using the existing 2D sprites
+            (assets/glyphs2d), single right column with opponent header,
+            moves list, and a "Sua jogada:" preview panel.
+
+        Both modes share the top button strip and 8-button Mac footer.
+        """
+        if view.get("mode") == "2d":
+            return self._render_play_2d(view)
+        return self._render_play_3d(view)
+
+    def _render_play_3d(self, view: dict) -> bytes:
+        """Chessmaster-2000-style perspective board (the original render).
 
         view keys: title, orientation_white, squares[(dc,dr,symbol|None,dark)],
         last_move[(dc,dr)], loser_king|None, rank_labels[8], file_labels[8],
@@ -867,8 +875,8 @@ class PilEngine:
 
         b = view.get("buttons", [])
 
-        # ---- top strip: 8-cell device-button grid (mirrors the footer) ----
-        self._top_bar(draw, view.get("title", ""))
+        # ---- top strip: 4 corner action buttons + title ----
+        self._play_top_strip(img, draw, view)
 
         # ---- player boxes: opponent (left wedge) + me (right wedge). Short &
         # narrow (y=56..196, x=6..134 / 666..794 = 128x140): the wedge is widest
@@ -901,6 +909,182 @@ class PilEngine:
         self._play_footer(img, draw, b)
         return self.finalize(img)
 
+    # ---- 2D top-down board (alternative PLAY layout) -------------------
+    # Visual reference: output/pil_play.png. Flat 8x8 board on the left
+    # using the existing 2D sprites (assets/glyphs2d), single right column
+    # for opponent header / moves list / next-move preview.
+
+    _2D_SQ = 44                          # square size (px) - 8 = 352 board
+    _2D_BOARD_X0 = 22                    # board left edge (file-label margin)
+    _2D_BOARD_Y0 = 62                    # board top edge (below top strip)
+
+    def _2d_sq_box(self, dc: int, dr: int) -> tuple[int, int, int, int]:
+        s = self._2D_SQ
+        x0 = self._2D_BOARD_X0 + dc * s
+        y0 = self._2D_BOARD_Y0 + dr * s
+        return (x0, y0, x0 + s, y0 + s)
+
+    def _render_play_2d(self, view: dict) -> bytes:
+        img = self._canvas()
+        draw = ImageDraw.Draw(img)
+        gray = self._gray_pattern()
+        sq = {(dc, dr): (sym, dark) for (dc, dr, sym, dark) in view["squares"]}
+        s = self._2D_SQ
+        bx0, by0 = self._2D_BOARD_X0, self._2D_BOARD_Y0
+        bx1, by1 = bx0 + s * 8, by0 + s * 8
+
+        # 1) dark squares — same dot-mesh gray as the 3D path so the two views
+        #    are visually consistent.
+        dark_mask = Image.new("1", (self.width, self.height), 0)
+        dm = ImageDraw.Draw(dark_mask)
+        for dr in range(8):
+            for dc in range(8):
+                if sq[(dc, dr)][1]:
+                    x0, y0, x1, y1 = self._2d_sq_box(dc, dr)
+                    dm.rectangle([x0, y0, x1 - 1, y1 - 1], fill=1)
+        img.paste(gray, (0, 0), dark_mask)
+
+        # 2) grid lines + outer frame
+        for i in range(9):
+            draw.line([bx0, by0 + i * s, bx1, by0 + i * s], fill=BLACK, width=1)
+            draw.line([bx0 + i * s, by0, bx0 + i * s, by1], fill=BLACK, width=1)
+        draw.rectangle([bx0 - 2, by0 - 2, bx1 + 2, by1 + 2],
+                       outline=BLACK, width=3)
+
+        # 3) last-move highlight (thick outline, drawn before pieces)
+        for (dc, dr) in view.get("last_move", []):
+            x0, y0, x1, y1 = self._2d_sq_box(dc, dr)
+            draw.rectangle([x0 + 1, y0 + 1, x1 - 2, y1 - 2],
+                           outline=BLACK, width=3)
+
+        # 4) pieces — native-size 2D sprites, centred in each square. The
+        #    sprites are crafted for inline label use; at the board scale
+        #    they sit comfortably (sprite ~30px on a 44px square).
+        for dr in range(8):
+            for dc in range(8):
+                symbol = sq[(dc, dr)][0]
+                if not symbol:
+                    continue
+                white = symbol.isupper()
+                im2d = self._glyph2d_img(symbol.lower(), white)
+                if im2d is None:
+                    continue
+                x0, y0, x1, y1 = self._2d_sq_box(dc, dr)
+                px = x0 + (s - im2d.width) // 2
+                py = y0 + (s - im2d.height) // 2
+                img.paste(im2d, (px, py), im2d)
+
+        # 5) loser-king X over the mated square
+        lk = view.get("loser_king")
+        if lk:
+            x0, y0, x1, y1 = self._2d_sq_box(lk[0], lk[1])
+            draw.line([x0 + 4, y0 + 4, x1 - 5, y1 - 5], fill=BLACK, width=3)
+            draw.line([x1 - 5, y0 + 4, x0 + 4, y1 - 5], fill=BLACK, width=3)
+
+        # 6) edge coordinates (rank labels on the left, file labels under)
+        rl = view.get("rank_labels", [])
+        fl_lab = view.get("file_labels", [])
+        for dr in range(8):
+            if dr < len(rl):
+                self.text(draw, (bx0 - 14, by0 + dr * s + s // 2 - 7),
+                          str(rl[dr]), self.f_mac_small)
+        for dc in range(8):
+            if dc < len(fl_lab):
+                cx = bx0 + dc * s + s // 2
+                self.text_centered(draw, cx, by1 + 3, str(fl_lab[dc]),
+                                   self.f_mac_small)
+
+        # 7) Top strip — 4 corner action buttons + title
+        b = view.get("buttons", [])
+        self._play_top_strip(img, draw, view)
+
+        # 8) Right info column: opponent header, moves list, "Sua jogada"
+        px0, px1 = bx1 + 18, self.width - 12
+        self._play_2d_opponent_block(img, draw, view, px0, 60, px1, 116)
+        self._play_2d_moves_block(img, draw, view, px0, 124, px1, 348)
+        self._play_2d_preview_block(img, draw, view, px0, 356, px1, 422)
+
+        # 9) Bottom footer (same as 3D path)
+        self._play_footer(img, draw, b)
+        return self.finalize(img)
+
+    # ---- 2D right-column blocks ----------------------------------------
+
+    def _play_2d_opponent_block(self, img, draw, view, x0, y0, x1, y1) -> None:
+        """Top right block: opponent name + captured-pieces row."""
+        pad = 4
+        name = view.get("adversary_name", "") or "—"
+        f = self.f_mac
+        self.text(draw, (x0 + pad, y0 + pad),
+                  self._fit(draw, name, f, x1 - x0 - 2 * pad), f)
+        # captured pieces row right below the name
+        cy = y0 + pad + 18
+        cx = x0 + pad
+        cap = view.get("adversary_captured", [])
+        for letter, white in cap:
+            im = self._glyph2d_img(letter.lower(), white)
+            if im is None:
+                break
+            if cx + im.width > x1 - pad:
+                break
+            img.paste(im, (cx, cy), im)
+            cx += im.width + 1
+        adv = view.get("adversary_adv", "")
+        if adv:
+            self.text(draw, (cx + 4, cy + 4), adv, self.f_mac_small)
+        # divider under
+        draw.line([x0, y1, x1, y1], fill=BLACK, width=1)
+
+    def _play_2d_moves_block(self, img, draw, view, x0, y0, x1, y1) -> None:
+        """Middle block: last N moves in two SAN columns."""
+        f_num = self.f_mac_small
+        moves = view.get("moves", []) or []
+        # Choose the last N rows that fit
+        row_h = 18
+        max_rows = max(1, (y1 - y0 - 4) // row_h)
+        rows = moves[-max_rows:]
+        if not rows:
+            self.text(draw, (x0 + 6, y0 + 4), "—", self.f_mac)
+            return
+        col_w = (x1 - x0 - 30) // 2
+        for i, (num, wsan, bsan) in enumerate(rows):
+            yy = y0 + i * row_h
+            self.text(draw, (x0 + 2, yy + 2), f"{num}.", f_num)
+            if wsan:
+                self.draw_san2d(img, draw, x0 + 28, yy, wsan, True, col_w)
+            if bsan:
+                self.draw_san2d(img, draw, x0 + 28 + col_w + 10, yy, bsan,
+                                False, col_w)
+
+    def _play_2d_preview_block(self, img, draw, view, x0, y0, x1, y1) -> None:
+        """Bottom right block: 'Sua jogada:' with the composing move and
+        a dashed Mac box framing it."""
+        # Dashed-ish frame: thin Mac box (no shadow) gets us most of the way
+        # without a new primitive.
+        self._mac_box(draw, (x0, y0, x1, y1), shadow=False, width=1)
+        cx = (x0 + x1) // 2
+        # "Sua jogada:" label at the top of the box
+        self.text(draw, (x0 + 8, y0 + 6), "Sua jogada:", self.f_mac_small)
+        # The composing move (or game-over text) sits centred underneath.
+        plines = view.get("preview_lines")
+        if plines:
+            ly = y0 + 24
+            for ln in plines[:2]:
+                lw = self.text_w(draw, ln, self.f_mac_title)
+                self.text(draw, (cx - lw // 2, ly), ln, self.f_mac_title)
+                ly += 18
+            return
+        san = view.get("move_preview", "") or "—"
+        white = view.get("preview_white", True)
+        ay = y0 + 24
+        if self._san2d_lead(san):
+            w = self._san2d_width(draw, san, white)
+            self.draw_san2d(img, draw, cx - w // 2, ay, san, white, x1 - x0 - 16)
+        else:
+            f = self.f_mac_title
+            lw = self.text_w(draw, san, f)
+            self.text(draw, (cx - lw // 2, ay), san, f)
+
     # ---- shared 8-cell device-button grid ------------------------------
     _BTN_N = 8
     _BTN_GAP = 6
@@ -910,6 +1094,46 @@ class PilEngine:
         bw = (self.width - self._BTN_GAP * (self._BTN_N + 1)) / self._BTN_N
         x0 = self._BTN_GAP + i * (bw + self._BTN_GAP)
         return x0, x0 + bw
+
+    def _play_top_strip(self, img, draw, view: dict) -> None:
+        """PLAY-screen top strip: 4 corner action buttons + centred title.
+
+        Slots 0 and 7 (the outer-most) plus slots 1 and 6 are the four
+        device top buttons (HL_LEFT / ESC / ENTER / HL_RIGHT in the
+        contract slot order). Slots 2..5 carry the title text.
+
+        Labels (current contract):
+          - slot 0 (HL_LEFT)  : view-toggle target — "2D" while showing
+            3D, "3D" while showing 2D.
+          - slot 1 (ESC)      : "Resign" — reserved; the actual handler
+            still maps short-press ESC to whatever the screen does today.
+          - slot 6 (ENTER)    : "Draw"   — same caveat.
+          - slot 7 (HL_RIGHT) : blank — reserved.
+        """
+        title = view.get("title", "")
+        view_label = "3D" if view.get("mode") == "2d" else "2D"
+        y0, y1 = 4, 48
+
+        # Four corner buttons. _mac_button skips slots whose token has no
+        # label, which matches the spec ("disabled = empty space").
+        for slot, label in ((0, view_label), (1, "Resign"),
+                            (6, "Draw"), (7, "")):
+            x0, x1 = self._btn_cell(slot)
+            self._mac_button(img, draw,
+                             (round(x0), y0, round(x1), y1),
+                             slot + 9, (label,) if label else None)
+
+        # Centred title across the middle 4 slots. We don't draw a box
+        # here — the corner buttons are the visual anchors and we don't
+        # want the title to look "tied" to slot 0 or 7.
+        _, lx = self._btn_cell(1)
+        rx, _ = self._btn_cell(6)
+        if title:
+            f = self.f_mac_title
+            tw = self.text_w(draw, title, f)
+            cx = (round(lx) + round(rx)) // 2
+            self.text(draw, (cx - tw // 2, (y0 + y1 - f.size) // 2 + 1),
+                      self._fit(draw, title, f, int(rx - lx) - 12), f)
 
     def _top_bar(self, draw, title: str, font=None) -> None:
         """Top strip = one instruction bar spanning the full 8-button width,
