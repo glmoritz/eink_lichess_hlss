@@ -81,6 +81,43 @@ class LocalBackend:
                 pass
         return 3
 
+    def resign(self, db: Session, game: Game) -> bool:
+        """End @p game by the player's resignation. Mirrors to the partner
+        row when it's a local human match. Returns True on a state change."""
+        if game.status != GameStatus.STARTED:
+            return False
+        game.status = GameStatus.RESIGN
+        game.is_my_turn = False
+        game.move_state = None
+        push_instance: Optional[str] = None
+        if game.match_id is not None:
+            board = self._board(game)
+            push_instance = self._mirror_to_partner(db, game, board)
+        db.commit()
+        if push_instance:
+            self._push_frame(push_instance)
+        return True
+
+    def offer_draw(self, db: Session, game: Game) -> bool:
+        """Local draw handling. For an AI game this just ends the game as
+        a draw (single-player convenience — Stockfish never offers, and
+        rejecting silently is worse UX than accepting). For a local human
+        match we end the game as a draw on both sides (mutual consent is
+        implicit; we don't yet model the two-step offer/accept flow)."""
+        if game.status != GameStatus.STARTED:
+            return False
+        game.status = GameStatus.DRAW
+        game.is_my_turn = False
+        game.move_state = None
+        push_instance: Optional[str] = None
+        if game.match_id is not None:
+            board = self._board(game)
+            push_instance = self._mirror_to_partner(db, game, board)
+        db.commit()
+        if push_instance:
+            self._push_frame(push_instance)
+        return True
+
     # -- public api ---------------------------------------------------------
     def create_ai_game(
         self,

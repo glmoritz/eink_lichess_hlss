@@ -193,12 +193,28 @@ def receive_instance_input(
     db.commit()
     db.refresh(event)
 
-    # Process the input event synchronously
+    # Process the input event synchronously.
+    # In PLAY, LONG_PRESS on the top app-buttons is reserved for game
+    # actions (Draw on ENTER, Resign on ESC) — labels on the strip
+    # match. Short presses keep the existing move-composition flow so
+    # an accidental tap mid-move can't end the game.
     processor = InputProcessorService(db)
-    state_changed, move_or_error = processor.process_button(
-        instance=instance,
-        button=ButtonType(data.button.value),
-    )
+    state_changed: bool
+    move_or_error: Optional[str]
+    if (
+        instance.current_screen == ScreenType.PLAY
+        and instance.current_game_id
+        and data.event_type.value == "LONG_PRESS"
+        and data.button.value in ("ENTER", "ESC")
+    ):
+        state_changed, move_or_error = _handle_play_long_press(
+            db, instance, data.button.value
+        )
+    else:
+        state_changed, move_or_error = processor.process_button(
+            instance=instance,
+            button=ButtonType(data.button.value),
+        )
 
     move_uci: Optional[str] = None
     info_message: Optional[str] = None
@@ -564,6 +580,40 @@ def delete_instance_by_llss_id(
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
+
+def _handle_play_long_press(
+    db: Session, instance: Instance, button_value: str
+) -> tuple[bool, Optional[str]]:
+    """Top-strip long-press actions in PLAY:
+       ENTER LONG_PRESS = offer/accept a draw
+       ESC   LONG_PRESS = resign
+    Dispatched to the appropriate backend. Returns (state_changed, msg)
+    so the surrounding handler can render + submit a frame on success."""
+    game = db.get(Game, instance.current_game_id)
+    if not game:
+        return False, "No active game"
+    if game.status != GameStatus.STARTED:
+        # Already over — nothing to do.
+        return False, None
+
+    if is_local(game):
+        if button_value == "ENTER":
+            ok = local_backend.offer_draw(db, game)
+            return ok, None if ok else "Could not offer draw"
+        # ESC
+        ok = local_backend.resign(db, game)
+        return ok, None if ok else "Could not resign"
+
+    # Lichess path — uses the existing berserk wrappers.
+    if not game.account or not game.account.api_token:
+        return False, "No linked account"
+    svc = LichessService(game.account.api_token)
+    if button_value == "ENTER":
+        ok = svc.offer_draw(game.lichess_game_id)
+        return ok, None if ok else "Lichess refused the draw offer"
+    ok = svc.resign_game(game.lichess_game_id)
+    return ok, None if ok else "Lichess refused the resign"
 
 
 def _footer_enabled_mask(button_labels: list[str]) -> int:

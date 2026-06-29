@@ -1135,10 +1135,17 @@ class PilEngine:
         draw.polygon([(cmx - 8, cmy - 5), (cmx + 8, cmy - 5), (cmx, cmy + 6)],
                      fill=BLACK)
 
-        # Right-hand HLSS-mapped buttons. _mac_button skips slots whose
-        # token has no label (disabled = empty space, per the contract).
+        # Right-hand HLSS-mapped buttons. Localised to the device UI
+        # language (pt-BR): "½" (LATIN-1 vulgar-half) = offer/accept draw,
+        # "⚑" (U+2691) = resign — single-char labels chosen so they
+        # land at the cell centre at the existing _mac_button text
+        # layout. The "⚑" branch in _mac_button (`ord > 0x2000`) routes
+        # the codepoint through the procedural _draw_flag glyph rather
+        # than the Geneva bitmap font, which has no flag glyph.
+        # _mac_button skips slots whose token has no label (disabled =
+        # empty space, per the contract).
         for slot, label in ((4, view_label), (5, ""),
-                            (6, "Draw"), (7, "Resign")):
+                            (6, "½"), (7, "⚑")):
             x0, x1 = self._btn_cell(slot)
             self._mac_button(img, draw,
                              (round(x0), y0, round(x1), y1),
