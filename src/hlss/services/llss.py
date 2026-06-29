@@ -3,7 +3,7 @@ LLSS (Low Level Screen Service) integration service.
 """
 
 import hashlib
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -94,13 +94,21 @@ class LLSSService:
         self,
         instance_id: str,
         image_data: bytes,
+        top_pressed: Optional[bytes] = None,
+        bottom_pressed: Optional[bytes] = None,
     ) -> dict[str, Any]:
         """
         Submit a rendered frame to LLSS.
 
         Args:
             instance_id: The LLSS instance ID
-            image_data: PNG image data
+            image_data: PNG image data — the whole rendered display
+            top_pressed: Optional PNG of the top button strip rendered with
+                every usable slot in pressed visual state (width × top
+                strip height). Used by the device-side press feedback
+                cache; sent as the multipart `top_pressed` part.
+            bottom_pressed: Optional PNG of the bottom button strip rendered
+                with every slot pressed (width × bottom strip height).
 
         Returns:
             Frame creation response including frame_id and hash
@@ -111,11 +119,21 @@ class LLSSService:
             subject=instance_id,
         )
 
+        files: list[tuple[str, tuple[str, bytes, str]]] = [
+            ("file", ("frame.png", image_data, "image/png")),
+        ]
+        if top_pressed:
+            files.append(("top_pressed",
+                          ("top_pressed.png", top_pressed, "image/png")))
+        if bottom_pressed:
+            files.append(("bottom_pressed",
+                          ("bottom_pressed.png", bottom_pressed, "image/png")))
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/instances/{instance_id}/frames",
                 headers=headers,
-                files={"file": ("frame.png", image_data, "image/png")},
+                files=files,
             )
             response.raise_for_status()
             return response.json()

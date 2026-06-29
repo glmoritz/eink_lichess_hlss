@@ -407,6 +407,36 @@ class RendererService:
             replacements=replacements,
         )
 
+    def render_new_match_pressed_strip(self,
+                                        button_labels: list[str]) -> Optional[bytes]:
+        """Bottom pressed-strip companion to render_new_match_screen.
+        Returns PNG bytes (PIL path only); None when the screen has no
+        usable buttons or the legacy HTML renderer is active."""
+        if not self._use_pil():
+            return None
+        try:
+            return self.engine.render_new_match_pressed_strip(button_labels)
+        except Exception:
+            return None
+
+    def render_play_screen_pressed_strip_pil(
+        self, game_id: str, player_name: str, db: Session
+    ) -> Optional[bytes]:
+        """Bottom pressed-strip companion to render_play_screen_pil. Returns
+        PNG bytes; None when no usable buttons or view can't be built."""
+        from hlss.models import Game
+
+        game = db.get(Game, game_id)
+        if not game:
+            return None
+        view = self._build_play_view(game, player_name, db)
+        if view is None:
+            return None
+        try:
+            return self.engine.render_play_pressed_strip(view)
+        except Exception:
+            return None
+
     def render_play_screen_pil(self, game_id: str, player_name: str, db: Session) -> Optional[bytes]:
         """Self-contained PIL play-screen renderer (no HTML/Chrome).
 

@@ -582,6 +582,12 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
     """
     renderer = RendererService()
 
+    # Optional bottom pressed strip — populated only for screens that have
+    # usable buttons (PIL path only). Top pressed strip stays None because
+    # HLSS currently draws the top as an instruction bar, not per-slot
+    # buttons; the device's invert fallback handles top presses.
+    bottom_pressed_data: Optional[bytes] = None
+
     # Render based on current screen
     if instance.current_screen == ScreenType.SETUP:
         image_data = renderer.render_setup_screen(config_url=instance.configuration_url or "")
@@ -670,6 +676,7 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
 
             card_sub = " • ".join(details)
 
+            challenge_buttons = [" "] * 8 + ["ENTER", "ESC"]
             image_data = renderer.render_new_match_screen(
                 mode="incoming",
                 card_title="Desafio recebido",
@@ -678,9 +685,22 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                 primary_action="Aceitar",
                 secondary_action="Recusar",
                 helper_text="ENTER aceita • ESC recusa",
-                button_labels=[" "] * 8 + ["ENTER", "ESC"],
+                button_labels=challenge_buttons,
             )
+            bottom_pressed_data = renderer.render_new_match_pressed_strip(challenge_buttons)
         else:
+            new_match_buttons = [
+                "< Adv",
+                " ",
+                "< Cor",
+                " ",
+                "Criar",
+                "Cor >",
+                " ",
+                "Adv >",
+                "ENTER",
+                "ESC",
+            ]
             image_data = renderer.render_new_match_screen(
                 mode="empty",
                 card_title="Novo jogo",
@@ -689,27 +709,23 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                 primary_action="",
                 secondary_action="",
                 helper_text="< > escolhem adversário e cor  •  Criar = botão 5 / ENTER",
-                button_labels=[
-                    "< Adv",
-                    " ",
-                    "< Cor",
-                    " ",
-                    "Criar",
-                    "Cor >",
-                    " ",
-                    "Adv >",
-                    "ENTER",
-                    "ESC",
-                ],
+                button_labels=new_match_buttons,
             )
+            bottom_pressed_data = renderer.render_new_match_pressed_strip(new_match_buttons)
     elif instance.current_screen == ScreenType.PLAY:
         # Render play screen - requires game state
         if instance.current_game_id:
+            play_player_name = (
+                instance.linked_account.username if instance.linked_account else "Player"
+            )
             image_data = renderer.render_play_screen(
                 game_id=instance.current_game_id,
-                player_name=(
-                    instance.linked_account.username if instance.linked_account else "Player"
-                ),
+                player_name=play_player_name,
+                db=db,
+            )
+            bottom_pressed_data = renderer.render_play_screen_pressed_strip_pil(
+                game_id=instance.current_game_id,
+                player_name=play_player_name,
                 db=db,
             )
         else:
@@ -728,6 +744,7 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
         image_hash=image_hash,
         width=instance.display_width,
         height=instance.display_height,
+        bottom_pressed_data=bottom_pressed_data,
     )
     db.add(frame)
     db.flush()  # Flush to get the frame ID
@@ -776,6 +793,8 @@ async def _submit_frame(instance: Instance, frame: Frame, db: Session) -> Option
         result = await llss.submit_frame(
             instance_id=instance.llss_instance_id,
             image_data=frame.image_data,
+            top_pressed=frame.top_pressed_data,
+            bottom_pressed=frame.bottom_pressed_data,
         )
 
         # Update frame with LLSS response

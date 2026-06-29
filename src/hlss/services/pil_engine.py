@@ -367,17 +367,29 @@ class PilEngine:
                 draw.rectangle(list(box), outline=BLACK)
 
     def button(self, img, draw, box, number: Optional[int], label: str,
-               enabled: bool = True, radius: int = 8) -> None:
-        x0, y0, x1, y1 = box
-        # disabled buttons get a faint mesh fill so they read as inactive
+               enabled: bool = True, radius: int = 8, pressed: bool = False) -> None:
+        # Disabled = nothing drawn. Slot positions are fixed by contract, so
+        # the user doesn't need a hollow placeholder; an empty cell reads as
+        # "this slot does nothing here."
         if not enabled:
-            self.mesh_fill(img, (x0 + 1, y0 + 1, x1 - 1, y1 - 1), 200)
-        draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, outline=BLACK)
+            return
+        x0, y0, x1, y1 = box
+        if pressed:
+            draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, fill=BLACK)
+            text_color = WHITE
+        else:
+            draw.rounded_rectangle([x0, y0, x1, y1], radius=radius, outline=BLACK)
+            text_color = BLACK
         if number is not None:
-            draw.text((x0 + 6, y0 + 4), str(number), fill=BLACK, font=self.f_tiny)
+            draw.text((x0 + 6, y0 + 4), str(number), fill=text_color, font=self.f_tiny)
         if label and label.strip():
-            self.text_centered(draw, (x0 + x1) // 2, y0 + (y1 - y0) // 2 - 8,
-                                label[:12], self.f_small)
+            cx = (x0 + x1) // 2
+            cy = y0 + (y1 - y0) // 2 - 8
+            s = label[:12]
+            if self._is_bitmap(self.f_small):
+                s = self._lat1(s)
+            w = self.text_w(draw, s, self.f_small)
+            draw.text((cx - w // 2, cy), s, fill=text_color, font=self.f_small)
 
     def header(self, img, draw, title: str) -> None:
         self.mesh_fill(img, (0, 0, self.width, self.HEADER_H), 210)
@@ -689,27 +701,49 @@ class PilEngine:
         draw.line([(x, y), (x, y + 16)], fill=BLACK, width=2)
         draw.polygon([(x + 2, y), (x + 13, y + 4), (x + 2, y + 8)], fill=BLACK)
 
-    def _mac_button(self, img, draw, box, index: int, token) -> None:
+    def _mac_button(self, img, draw, box, index: int, token,
+                    pressed: bool = False) -> None:
         token = token or ()
         label = token[0] if token else ""
         white = bool(token[1]) if len(token) > 1 else True
         is_move = bool(token[2]) if len(token) > 2 else False
-        x0, y0, x1, y1 = box
-        empty = not (label and label.strip())
-        self._mac_box(draw, box, shadow=not empty, width=(1 if empty else 2))
-        draw.text((x0 + 4, y0 + 2), str(index), fill=BLACK, font=self.f_mac_small)
-        if empty:
+        # Empty = no chrome at all. Slot positions are contractual, so a
+        # hollow Mac box + index number on an unused slot is just noise.
+        if not (label and label.strip()):
             return
+        x0, y0, x1, y1 = box
+        if pressed:
+            # Mac "down" look: filled-black cell with white outline + text.
+            draw.rectangle(box, fill=BLACK)
+            draw.rectangle(box, outline=WHITE, width=1)
+            text_color = WHITE
+        else:
+            self._mac_box(draw, box, shadow=True, width=2)
+            text_color = BLACK
+        draw.text((x0 + 4, y0 + 2), str(index), fill=text_color, font=self.f_mac_small)
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         if any(ord(ch) > 0x2000 for ch in label):     # flag / icon glyph
-            self._draw_flag(draw, int(cx - 6), int(cy - 8))
+            # In pressed mode the black flag would vanish into the black bg;
+            # skip the glyph — index + the cell highlight already say "pressed".
+            if not pressed:
+                self._draw_flag(draw, int(cx - 6), int(cy - 8))
             return
         if is_move and self._san2d_lead(label):        # move w/ a piece -> 2D sprite
-            w = self._san2d_width(draw, label, white)
-            sp = self._glyph2d_img(label[0], white)
-            sh = sp.height if sp is not None else 16
-            self.draw_san2d(img, draw, int(cx - w / 2), int(cy - sh / 2),
-                            label, white, (x1 - x0) - 6)
+            if not pressed:
+                w = self._san2d_width(draw, label, white)
+                sp = self._glyph2d_img(label[0], white)
+                sh = sp.height if sp is not None else 16
+                self.draw_san2d(img, draw, int(cx - w / 2), int(cy - sh / 2),
+                                label, white, (x1 - x0) - 6)
+                return
+            # Pressed move button: drop the sprite, show only the destination
+            # text in white so something still reads in the inverted cell.
+            text = label[1:] if len(label) > 1 else label
+            f = self.f_mac
+            bb = draw.textbbox((0, 0), text, font=f)
+            draw.text((cx - (bb[2] - bb[0]) / 2 - bb[0],
+                       cy - (bb[3] - bb[1]) / 2 - bb[1]),
+                      text, fill=text_color, font=f)
             return
         # plain-text buttons (pawn SAN, file/rank selects, O-O, actions) use
         # Chicago to match the move buttons; long labels (CONFIRMAR/CANCELAR)
@@ -719,7 +753,7 @@ class PilEngine:
             f = self.f_mac
         bb = draw.textbbox((0, 0), label, font=f)
         draw.text((cx - (bb[2] - bb[0]) / 2 - bb[0], cy - (bb[3] - bb[1]) / 2 - bb[1]),
-                  label, fill=BLACK, font=f)
+                  label, fill=text_color, font=f)
 
     def _last_san(self, view: dict):
         san = view.get("last_move_san")
@@ -907,14 +941,56 @@ class PilEngine:
                   self._fit(draw, title, font, bx1 - tx - 12),
                   fill=BLACK, font=font)
 
-    def _play_footer(self, img, draw, buttons: list) -> None:
+    def _play_footer(self, img, draw, buttons: list, pressed: bool = False) -> None:
         """Bottom strip = physical buttons B1..B8 only, as Mac boxes. Move
         buttons (is_move) render the 2D piece sprite + destination text."""
         y0, y1 = 430, 474
         for i in range(self._BTN_N):
             tok = buttons[i] if i < len(buttons) else None
             x0, x1 = self._btn_cell(i)
-            self._mac_button(img, draw, (round(x0), y0, round(x1), y1), i + 1, tok)
+            self._mac_button(img, draw, (round(x0), y0, round(x1), y1), i + 1, tok,
+                             pressed=pressed)
+
+    def render_pressed_footer_strip(self, buttons: list) -> Optional[bytes]:
+        """Render JUST the bottom 50-px footer strip with every button in
+        pressed visual state. Returns PNG bytes of an 800 x FOOTER_H image
+        (rows that overlay the device's bottom strip). Returns None if no
+        button slot would be populated — caller skips the upload then.
+
+        Used for the LLSS strip-cache contract: the device caches this
+        strip, then on press of slot S it picks slot S's column range and
+        merges it over its captured frame band (everything else stays as
+        rendered in the main frame)."""
+        # Skip if there's nothing to highlight.
+        populated = sum(1 for tok in buttons[:self._BTN_N]
+                        if tok and (tok[0] if isinstance(tok, tuple) else tok)
+                        and (tok[0].strip() if isinstance(tok, tuple) else tok.strip()))
+        if populated == 0:
+            return None
+        img = Image.new("L", (self.width, self.FOOTER_H), WHITE)
+        draw = ImageDraw.Draw(img)
+        # Mirror _play_footer's button rect (y=430..474 in a 480-px canvas)
+        # by collapsing to (y=0..44) in a FOOTER_H=50 strip — preserves the
+        # 6-px bottom margin so the device-side overlay positions match.
+        y0, y1 = 0, self.FOOTER_H - 6
+        for i in range(self._BTN_N):
+            tok = buttons[i] if i < len(buttons) else None
+            x0, x1 = self._btn_cell(i)
+            self._mac_button(img, draw, (round(x0), y0, round(x1), y1), i + 1, tok,
+                             pressed=True)
+        return self.finalize(img)
+
+    def render_play_pressed_strip(self, view: dict) -> Optional[bytes]:
+        """Bottom pressed-strip companion to render_play. Used by the LLSS
+        strip-cache contract — the device extracts only the pressed slot's
+        column range and merges it over its captured frame band."""
+        return self.render_pressed_footer_strip(view.get("buttons", []))
+
+    def render_new_match_pressed_strip(self,
+                                       button_labels: list[str]) -> Optional[bytes]:
+        """Bottom pressed-strip companion to render_new_match_screen."""
+        tokens = [(lab,) for lab in (button_labels or [])[:8]]
+        return self.render_pressed_footer_strip(tokens)
 
     def render_new_match_screen(self, mode: str, card_title: str, card_main: str,
                                 card_sub: str, primary_action: str,

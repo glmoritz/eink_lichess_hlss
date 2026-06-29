@@ -198,6 +198,14 @@ class Frame(Base):
     width: Mapped[int] = mapped_column(Integer, nullable=False)
     height: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # Optional pressed-state strips for the LLSS press-feedback cache. PNG
+    # bytes of width × top_strip_height / width × bottom_strip_height, with
+    # every button slot drawn in pressed visual state. The device extracts
+    # only the actually-pressed slot's column range and overlays it on the
+    # captured frame band. Omitted when the screen has no usable buttons.
+    top_pressed_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    bottom_pressed_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+
     # LLSS integration
     llss_frame_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
