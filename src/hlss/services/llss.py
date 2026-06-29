@@ -96,6 +96,8 @@ class LLSSService:
         image_data: bytes,
         top_pressed: Optional[bytes] = None,
         bottom_pressed: Optional[bytes] = None,
+        top_enabled_mask: Optional[int] = None,
+        bottom_enabled_mask: Optional[int] = None,
     ) -> dict[str, Any]:
         """
         Submit a rendered frame to LLSS.
@@ -129,11 +131,18 @@ class LLSSService:
             files.append(("bottom_pressed",
                           ("bottom_pressed.png", bottom_pressed, "image/png")))
 
+        data: dict[str, str] = {}
+        if top_enabled_mask is not None:
+            data["top_enabled_mask"] = str(top_enabled_mask & 0xFF)
+        if bottom_enabled_mask is not None:
+            data["bottom_enabled_mask"] = str(bottom_enabled_mask & 0xFF)
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/instances/{instance_id}/frames",
                 headers=headers,
                 files=files,
+                data=data or None,
             )
             response.raise_for_status()
             return response.json()

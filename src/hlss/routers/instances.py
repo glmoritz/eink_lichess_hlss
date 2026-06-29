@@ -566,6 +566,18 @@ def delete_instance_by_llss_id(
 # ============================================================================
 
 
+def _footer_enabled_mask(button_labels: list[str]) -> int:
+    """Compute the 8-bit bottom-strip enabled-slot mask from a footer
+    button list (slot S enabled iff buttons[S] has a non-empty label).
+    Only the first 8 entries are inspected — slots 9+ are ENTER/ESC
+    handled by the top strip."""
+    mask = 0
+    for i, lab in enumerate((button_labels or [])[:8]):
+        if lab and lab.strip():
+            mask |= (1 << i)
+    return mask
+
+
 def _render_frame(instance: Instance, db: Session) -> Frame:
     """
     Render a frame for the given instance based on its current screen state.
@@ -587,6 +599,7 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
     # HLSS currently draws the top as an instruction bar, not per-slot
     # buttons; the device's invert fallback handles top presses.
     bottom_pressed_data: Optional[bytes] = None
+    bottom_enabled_mask: Optional[int] = None  # 0-255, bit S = slot S pressable
 
     # Render based on current screen
     if instance.current_screen == ScreenType.SETUP:
@@ -677,6 +690,7 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
             card_sub = " • ".join(details)
 
             challenge_buttons = [" "] * 8 + ["ENTER", "ESC"]
+            bottom_enabled_mask = _footer_enabled_mask(challenge_buttons)
             image_data = renderer.render_new_match_screen(
                 mode="incoming",
                 card_title="Desafio recebido",
@@ -701,6 +715,7 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                 "ENTER",
                 "ESC",
             ]
+            bottom_enabled_mask = _footer_enabled_mask(new_match_buttons)
             image_data = renderer.render_new_match_screen(
                 mode="empty",
                 card_title="Novo jogo",
@@ -728,6 +743,11 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
                 player_name=play_player_name,
                 db=db,
             )
+            bottom_enabled_mask = renderer.render_play_screen_enabled_mask_pil(
+                game_id=instance.current_game_id,
+                player_name=play_player_name,
+                db=db,
+            )
         else:
             image_data = renderer.render_setup_screen(config_url=instance.configuration_url or "")
     else:
@@ -745,6 +765,7 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
         width=instance.display_width,
         height=instance.display_height,
         bottom_pressed_data=bottom_pressed_data,
+        bottom_enabled_mask=bottom_enabled_mask,
     )
     db.add(frame)
     db.flush()  # Flush to get the frame ID
@@ -795,6 +816,8 @@ async def _submit_frame(instance: Instance, frame: Frame, db: Session) -> Option
             image_data=frame.image_data,
             top_pressed=frame.top_pressed_data,
             bottom_pressed=frame.bottom_pressed_data,
+            top_enabled_mask=frame.top_enabled_mask,
+            bottom_enabled_mask=frame.bottom_enabled_mask,
         )
 
         # Update frame with LLSS response

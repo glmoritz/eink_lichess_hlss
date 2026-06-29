@@ -437,6 +437,29 @@ class RendererService:
         except Exception:
             return None
 
+    def render_play_screen_enabled_mask_pil(
+        self, game_id: str, player_name: str, db: Session
+    ) -> Optional[int]:
+        """Compute the bottom enabled-slot mask from the PLAY view's button
+        list (slot S enabled iff buttons[S] has a non-empty label). Returns
+        None when the view can't be built or the legacy HTML path is active."""
+        from hlss.models import Game
+
+        if not self._use_pil():
+            return None
+        game = db.get(Game, game_id)
+        if not game:
+            return None
+        view = self._build_play_view(game, player_name, db)
+        if view is None:
+            return None
+        mask = 0
+        for i, tok in enumerate(view.get("buttons", [])[:8]):
+            label = tok[0] if isinstance(tok, tuple) and tok else ""
+            if label and label.strip():
+                mask |= (1 << i)
+        return mask
+
     def render_play_screen_pil(self, game_id: str, player_name: str, db: Session) -> Optional[bytes]:
         """Self-contained PIL play-screen renderer (no HTML/Chrome).
 

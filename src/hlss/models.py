@@ -206,6 +206,14 @@ class Frame(Base):
     top_pressed_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
     bottom_pressed_data: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
 
+    # 8-bit per-band mask of enabled (pressable) slots. Independent of the
+    # rendered strip image so a frame where labels are unchanged but a
+    # button toggles enabled-state can reuse the same strip id and only
+    # change the mask. Sent to LLSS as a form field on /instances/{id}/frames
+    # and forwarded to the device in DeviceStateResponse / InputProcessResponse.
+    top_enabled_mask: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bottom_enabled_mask: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # LLSS integration
     llss_frame_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
