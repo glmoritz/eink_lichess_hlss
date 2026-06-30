@@ -108,20 +108,20 @@ class InputProcessorService:
         Returns:
             Tuple of (state_changed, error_message)
         """
-        # PLAY-screen top-button overrides:
-        #   HL_LEFT  : toggle the board view mode (3D <-> 2D). Re-renders.
-        #   HL_RIGHT : reserved (no-op). The default _navigate_screen still
-        #              runs on the non-PLAY screens below.
-        #   ENTER / ESC: still routed to _handle_play_input so the move-
-        #              composition flow keeps working. The top strip
-        #              labels them "Draw" / "Resign" but draw/resign isn't
-        #              wired yet — TODO to flip these once it is.
+        # PLAY-screen top-button overrides (rev 2026-06-30, after the
+        # Mac-bar top-strip redesign):
+        #   HL_RIGHT (slot 5/btn14) : toggle board view mode 3D <-> 2D.
+        #   HL_LEFT  (slot 4/btn13) : no-op — sits under the title bar.
+        #   ENTER / ESC : short press still routes to _handle_play_input
+        #                 (move-composition); long press is intercepted
+        #                 upstream in receive_instance_input for draw /
+        #                 resign.
         if instance.current_screen == ScreenType.PLAY:
-            if button == ButtonType.HL_LEFT:
+            if button == ButtonType.HL_RIGHT:
                 from hlss.services import view_state
                 view_state.toggle(instance.id)
                 return True, None
-            if button == ButtonType.HL_RIGHT:
+            if button == ButtonType.HL_LEFT:
                 return False, None
 
         # Handle navigation buttons (non-PLAY screens)
