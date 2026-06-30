@@ -98,6 +98,7 @@ class LLSSService:
         bottom_pressed: Optional[bytes] = None,
         top_enabled_mask: Optional[int] = None,
         bottom_enabled_mask: Optional[int] = None,
+        full_refresh: bool = False,
     ) -> dict[str, Any]:
         """
         Submit a rendered frame to LLSS.
@@ -136,6 +137,8 @@ class LLSSService:
             data["top_enabled_mask"] = str(top_enabled_mask & 0xFF)
         if bottom_enabled_mask is not None:
             data["bottom_enabled_mask"] = str(bottom_enabled_mask & 0xFF)
+        if full_refresh:
+            data["full_refresh"] = "1"
 
         async with httpx.AsyncClient() as client:
             response = await client.post(

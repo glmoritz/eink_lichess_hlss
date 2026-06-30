@@ -214,6 +214,15 @@ class Frame(Base):
     top_enabled_mask: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     bottom_enabled_mask: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Server-side refresh hint: when True, the device should issue a full
+    # e-ink refresh (UI_CTX_SWITCH) instead of partial (UI_CTX_SERVER) on
+    # this frame. Set by HLSS for view-mode toggles and any frame where
+    # the board position actually changed (move applied, opponent move
+    # streamed). Defaults to False — partial stays the steady state.
+    full_refresh: Mapped[bool] = mapped_column(Boolean, nullable=False,
+                                                default=False,
+                                                server_default="false")
+
     # LLSS integration
     llss_frame_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

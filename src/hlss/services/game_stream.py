@@ -170,6 +170,11 @@ class GameStreamManager:
             db.close()
 
         if should_push:
+            # Opponent move (or game-end) changed the board — the next
+            # render needs a full refresh to avoid ghosting from the
+            # piece that just moved.
+            from hlss.services import refresh_state
+            refresh_state.mark(instance_id)
             self._push_frame(instance_id)
         return finished
 

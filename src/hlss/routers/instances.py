@@ -241,6 +241,8 @@ def receive_instance_input(
                 # Local backend: apply our move + (for an AI game) Stockfish's
                 # reply, synchronously. No network.
                 local_backend.submit_move(db, game, move_uci)
+                from hlss.services import refresh_state
+                refresh_state.mark(instance.id)
             else:
                 lichess_service = LichessService(game.account.api_token)
                 success = lichess_service.make_move(game.lichess_game_id, move_uci)
@@ -255,6 +257,8 @@ def receive_instance_input(
                     # arrives via the realtime game stream.
                     processor.apply_local_move(game, move_uci)
                     db.commit()
+                    from hlss.services import refresh_state
+                    refresh_state.mark(instance.id)
 
     # Keep a realtime Board stream open for the active game so the opponent's
     # moves and game-end arrive and render automatically — no per-press stream
@@ -810,6 +814,13 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
     # Compute hash
     image_hash = hashlib.sha256(image_data).hexdigest()
 
+    # Consume any pending "needs full refresh" hint set by the input
+    # processor (view toggle, move applied) or the game-stream worker
+    # (opponent move arrived). The flag rides on the Frame so a
+    # downstream re-submit can forward it to LLSS in the same multipart.
+    from hlss.services import refresh_state
+    full_refresh = refresh_state.consume(instance.id)
+
     # Store frame locally
     frame = Frame(
         screen_type=instance.current_screen,
@@ -819,6 +830,7 @@ def _render_frame(instance: Instance, db: Session) -> Frame:
         height=instance.display_height,
         bottom_pressed_data=bottom_pressed_data,
         bottom_enabled_mask=bottom_enabled_mask,
+        full_refresh=full_refresh,
     )
     db.add(frame)
     db.flush()  # Flush to get the frame ID
@@ -871,6 +883,7 @@ async def _submit_frame(instance: Instance, frame: Frame, db: Session) -> Option
             bottom_pressed=frame.bottom_pressed_data,
             top_enabled_mask=frame.top_enabled_mask,
             bottom_enabled_mask=frame.bottom_enabled_mask,
+            full_refresh=bool(frame.full_refresh),
         )
 
         # Update frame with LLSS response

@@ -118,8 +118,11 @@ class InputProcessorService:
         #                 resign.
         if instance.current_screen == ScreenType.PLAY:
             if button == ButtonType.HL_RIGHT:
-                from hlss.services import view_state
+                from hlss.services import refresh_state, view_state
                 view_state.toggle(instance.id)
+                # 3D <-> 2D is a wholesale layout change; ghosting from a
+                # partial refresh leaves obvious phantom pieces.
+                refresh_state.mark(instance.id)
                 return True, None
             if button == ButtonType.HL_LEFT:
                 return False, None
